@@ -44,7 +44,7 @@ export class BashTool extends BaseTool {
 
   async execute(params: Record<string, unknown>): Promise<ToolResult> {
     const command = String(params["command"] ?? "");
-    const timeout = Number(params["timeout"] ?? DEFAULT_TIMEOUT_MS);
+    const timeout = Math.max(1000, Number(params["timeout"] ?? DEFAULT_TIMEOUT_MS));
     const cwd = params["cwd"] ? String(params["cwd"]) : undefined;
 
     if (!command) {

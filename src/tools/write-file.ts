@@ -34,11 +34,14 @@ export class WriteFileTool extends BaseTool {
 
   async execute(params: Record<string, unknown>): Promise<ToolResult> {
     const filePath = String(params["file_path"] ?? "");
-    const content = String(params["content"] ?? "");
-
     if (!filePath) {
       return { success: false, content: "Error: file_path is required." };
     }
+
+    if (!("content" in params)) {
+      return { success: false, content: "Error: content is required." };
+    }
+    const content = String(params["content"]);
 
     const resolvedPath = resolve(filePath);
     const parentDir = dirname(resolvedPath);
