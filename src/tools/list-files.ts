@@ -5,7 +5,7 @@
  * Displays file type, size, and modification time for each entry.
  */
 
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, lstat } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { join, resolve, relative, basename } from "node:path";
 import { BaseTool, type ToolResult, type JSONSchema } from "./base.js";
@@ -103,14 +103,32 @@ function formatSize(bytes: number): string {
 }
 
 /**
+ * A collected file entry with both the formatted display string and the
+ * relative path (kept separate so glob filtering operates on the real path,
+ * not on a reformatted string with padded fields).
+ */
+interface FileEntry {
+  formatted: string;
+  relPath: string;
+}
+
+/**
  * Recursively collect file entries under a directory.
+ *
+ * Uses `lstat` instead of `stat` to avoid following symbolic links, which
+ * prevents infinite recursion when a symlink points to an ancestor directory.
+ *
+ * When a `globRegex` is provided, filtering happens inline during collection
+ * so that `maxEntries` limits the number of *matching* entries rather than
+ * the number of scanned entries.
  */
 async function collectEntries(
   dir: string,
   baseDir: string,
   maxEntries: number,
-): Promise<string[]> {
-  const results: string[] = [];
+  globRegex?: RegExp,
+): Promise<FileEntry[]> {
+  const results: FileEntry[] = [];
 
   let entries: Dirent[];
   try {
@@ -126,12 +144,30 @@ async function collectEntries(
     const relPath = relative(baseDir, fullPath);
 
     try {
-      const entryStat = await stat(fullPath);
-      results.push(formatEntry(entry.name, entryStat, relPath));
+      // Use lstat to avoid following symbolic links (prevents infinite
+      // recursion when a symlink points to an ancestor directory).
+      const entryStat = await lstat(fullPath);
+      const formatted = formatEntry(entry.name, entryStat, relPath);
 
-      // Recurse into directories
+      // Apply glob filter inline during collection so that maxEntries
+      // limits matching results, not scanned entries.
+      const matchesGlob =
+        !globRegex ||
+        globRegex.test(relPath) ||
+        globRegex.test(basename(relPath));
+
+      if (matchesGlob) {
+        results.push({ formatted, relPath });
+      }
+
+      // Recurse into real directories only (skip symlinked directories)
       if (entryStat.isDirectory() && results.length < maxEntries) {
-        const subEntries = await collectEntries(fullPath, baseDir, maxEntries);
+        const subEntries = await collectEntries(
+          fullPath,
+          baseDir,
+          maxEntries,
+          globRegex,
+        );
         results.push(...subEntries);
       }
     } catch {
@@ -186,40 +222,35 @@ export class ListFilesTool extends BaseTool {
         };
       }
 
-      const entries = await collectEntries(targetPath, targetPath, maxEntries);
+      const globRegex = pattern ? globToRegExp(pattern) : undefined;
+      const allEntries = await collectEntries(
+        targetPath,
+        targetPath,
+        maxEntries,
+        globRegex,
+      );
 
-      if (entries.length === 0) {
-        return {
-          success: true,
-          content: `No entries found in "${targetPath}".`,
-        };
+      if (allEntries.length === 0) {
+        const msg = pattern
+          ? `No entries matching "${pattern}" found in "${targetPath}".`
+          : `No entries found in "${targetPath}".`;
+        return { success: true, content: msg };
       }
 
-      // Apply glob filter if a pattern was provided
-      let filtered = entries;
-      if (pattern) {
-        const regex = globToRegExp(pattern);
-        filtered = entries.filter((entry) => {
-          // Extract the relative path from the formatted entry line
-          // Format: "type size mtime relativePath"
-          const parts = entry.split(" ");
-          const relPath = parts.slice(3).join(" ");
-          return regex.test(relPath) || regex.test(basename(relPath));
-        });
-      }
+      const lines = allEntries.map((e) => e.formatted);
 
       const header = pattern
-        ? `[${filtered.length} matching entries for pattern "${pattern}" in "${targetPath}"]`
-        : `[${filtered.length} entries in "${targetPath}"]`;
+        ? `[${lines.length} matching entries for pattern "${pattern}" in "${targetPath}"]`
+        : `[${lines.length} entries in "${targetPath}"]`;
 
       const truncated =
-        filtered.length >= maxEntries
+        lines.length >= maxEntries
           ? `\n[Truncated: showing first ${maxEntries} entries. Use a pattern to narrow results.]`
           : "";
 
       return {
         success: true,
-        content: `${header}\n${filtered.join("\n")}${truncated}`,
+        content: `${header}\n${lines.join("\n")}${truncated}`,
       };
     } catch (error: unknown) {
       if (error instanceof Error && "code" in error) {
