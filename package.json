@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/cli/index.js",
   "bin": {
-    "claude-code": "dist/cli/index.js"
+    "claude-code": "dist/cli/index.js",
+    "claude-code-cli": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc",
