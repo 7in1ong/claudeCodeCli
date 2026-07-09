@@ -1,10 +1,17 @@
 /**
  * Interactive REPL
  *
- * Manages the readline-based interactive loop: prompt display,
- * multi-line input continuation, slash command routing (/clear, /help),
- * exit detection, and dispatching user input to either mock mode
- * or the agentic loop.
+ * Manages the interactive loop with two modes:
+ *
+ * 1. **Readline mode** (PlainRenderer): Uses node:readline for input.
+ *    Supports multi-line input (trailing backslash), slash commands,
+ *    and graceful exit on Ctrl+C / Ctrl+D.
+ *
+ * 2. **TUI mode** (InkRenderer): Delegates to `renderer.startInteractive()`
+ *    which owns stdin via Ink's React-based input system. The handler
+ *    callback routes input through the same slash command / LLM pipeline.
+ *
+ * Both modes share the same `handleUserInput()` function for input routing.
  */
 
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
@@ -29,9 +36,8 @@ const REPL_COMMANDS = [
 /**
  * Start the interactive REPL.
  *
- * Sets up readline, prints the banner, and enters the input loop.
- * Handles multi-line input (trailing backslash), slash commands,
- * and graceful exit on Ctrl+C / Ctrl+D.
+ * When the renderer supports `startInteractive()` (TUI mode), delegates
+ * input handling to the renderer. Otherwise, uses readline.
  */
 export async function startRepl(
   model: string,
@@ -46,6 +52,35 @@ export async function startRepl(
 
   renderer.renderBanner(CLI_VERSION, model, llmAvailable);
 
+  // Build the input handler shared by both modes
+  const inputHandler = async (input: string): Promise<void> => {
+    await handleUserInput(
+      input,
+      conversation,
+      llmAvailable,
+      registry,
+      executor,
+      renderer,
+    );
+  };
+
+  // ── TUI mode: delegate to renderer's interactive system ─────────────
+  if (typeof renderer.startInteractive === "function") {
+    await renderer.startInteractive(inputHandler);
+    return;
+  }
+
+  // ── Readline mode (PlainRenderer) ──────────────────────────────────
+  await startReadlineRepl(inputHandler, renderer);
+}
+
+/**
+ * Readline-based REPL for PlainRenderer.
+ */
+async function startReadlineRepl(
+  inputHandler: (input: string) => Promise<void>,
+  renderer: Renderer,
+): Promise<void> {
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -69,10 +104,10 @@ export async function startRepl(
       const firstPart = trimmed.slice(0, -1);
       const fullInput = await readMultiLine(rl, firstPart);
       if (fullInput.trim()) {
-        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor, renderer);
+        await inputHandler(fullInput);
       }
     } else if (trimmed.trim()) {
-      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, renderer);
+      await inputHandler(trimmed);
     }
 
     rl.prompt();
@@ -88,7 +123,7 @@ export async function startRepl(
 /**
  * Read continuation lines for a multi-line input.
  * The user enters multi-line mode by ending a line with '\'.
- * They finish input by entering '.' on a line by itself.
+ * They finish input by entering '.' on its own line.
  */
 async function readMultiLine(
   rl: ReadlineInterface,
@@ -96,7 +131,9 @@ async function readMultiLine(
 ): Promise<string> {
   const lines: string[] = [firstLine];
 
-  console.log(chalk.dim('  (multi-line mode: enter "." on its own line to finish)'));
+  console.log(
+    chalk.dim('  (multi-line mode: enter "." on its own line to finish)'),
+  );
 
   return new Promise<string>((resolve) => {
     rl.setPrompt(chalk.yellow("... "));
@@ -150,18 +187,25 @@ async function handleUserInput(
 
   // ── Process through LLM or mock ──────────────────────────────────────
   if (!llmAvailable) {
-    console.log(chalk.cyan(mockResponse(input)));
+    renderer.renderAssistantText(mockResponse(input));
+    renderer.endStream?.();
     return;
   }
 
   try {
-    await processUserMessage(input, conversation, registry, executor, renderer);
+    await processUserMessage(
+      input,
+      conversation,
+      registry,
+      executor,
+      renderer,
+    );
   } catch (error) {
     const friendly = classifyApiError(error);
     renderer.renderError(friendly);
   }
 
-  console.log(); // blank line between exchanges
+  renderer.renderNewline(); // blank line between exchanges
 }
 
 /**

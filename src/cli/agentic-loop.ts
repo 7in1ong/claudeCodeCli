@@ -75,8 +75,8 @@ export async function processUserMessage(
       callbacks,
     );
 
-    // End of text block — visual separator
-    console.log();
+    // End of text block — signal streaming complete
+    renderer.endStream?.();
 
     // Record assistant response in conversation history
     conversation.addAssistantMessage(result.message.content);
@@ -109,7 +109,7 @@ export async function processUserMessage(
         );
       }
 
-      console.log(); // blank line before next streamed response
+      renderer.renderNewline(); // blank line before next streamed response
     }
 
     hasToolUse = result.hasToolUse;

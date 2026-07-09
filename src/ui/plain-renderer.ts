@@ -38,6 +38,10 @@ export class PlainRenderer implements Renderer {
     process.stdout.write(chalk.cyan(text));
   }
 
+  endStream(): void {
+    console.log(); // newline after streaming block
+  }
+
   renderToolStart(toolName: string): void {
     console.log(
       chalk.yellow(`\n  [Tool] ${toolName}`) + chalk.dim(" — executing..."),
@@ -79,5 +83,9 @@ export class PlainRenderer implements Renderer {
     }
     console.log(chalk.dim('  Use "\\" at end of line for multi-line input,'));
     console.log(chalk.dim('  then "." on its own line to finish.'));
+  }
+
+  renderNewline(): void {
+    console.log();
   }
 }
