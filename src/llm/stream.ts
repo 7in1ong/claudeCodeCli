@@ -52,18 +52,17 @@ export async function streamMessage(
   const client = getClient();
   const model = getModel();
 
-  const toolUses: ToolUseBlock[] = [];
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < DEFAULT_MAX_RETRIES; attempt++) {
     try {
-      const result = await executeStream(client, model, params, toolUses, callbacks);
+      const result = await executeStream(client, model, params, callbacks);
       return result;
     } catch (error: unknown) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
       if (isTransientError(error) && attempt < DEFAULT_MAX_RETRIES - 1) {
-        const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+        const delay = calculateRetryDelay(attempt, error);
         await sleep(delay);
         continue;
       }
@@ -86,11 +85,11 @@ async function executeStream(
   client: ReturnType<typeof getClient>,
   model: string,
   params: SendMessageParams,
-  toolUses: ToolUseBlock[],
   callbacks?: StreamCallbacks,
 ): Promise<StreamResult> {
   const contentBlocks: AccumulatingBlock[] = [];
-  let apiMessage: Message | null = null;
+  const toolUses: ToolUseBlock[] = [];
+  const messageRef: { current: Message | null } = { current: null };
 
   const stream = await client.messages.create({
     model,
@@ -102,26 +101,31 @@ async function executeStream(
   });
 
   for await (const event of stream as AsyncIterable<RawMessageStreamEvent>) {
-    processEvent(event, contentBlocks, callbacks, (msg) => {
-      apiMessage = msg;
-    }, toolUses);
+    processEvent(event, contentBlocks, callbacks, toolUses, messageRef);
   }
 
-  if (!apiMessage) {
+  if (!messageRef.current) {
     throw new Error("No message received from API");
   }
 
-  // Use a typed reference — TypeScript can't trace the closure-based assignment
-  const msg: Message = apiMessage;
+  const msg: Message = messageRef.current;
 
   // Build the final content from accumulated blocks
   const finalContent: Message["content"] = contentBlocks.map((block) => {
     if (block.type === "tool_use") {
+      let input: Record<string, unknown> = {};
+      if (block.inputJson) {
+        try {
+          input = JSON.parse(block.inputJson) as Record<string, unknown>;
+        } catch {
+          // Malformed JSON — fall back to empty object
+        }
+      }
       return {
         type: "tool_use" as const,
         id: block.id ?? "",
         name: block.name ?? "",
-        input: block.inputJson ? JSON.parse(block.inputJson) : {},
+        input,
       };
     }
     return {
@@ -158,12 +162,12 @@ function processEvent(
   event: RawMessageStreamEvent,
   contentBlocks: AccumulatingBlock[],
   callbacks: StreamCallbacks | undefined,
-  setMessage: (msg: Message) => void,
   toolUses: ToolUseBlock[],
+  messageRef: { current: Message | null },
 ): void {
   switch (event.type) {
     case "message_start": {
-      setMessage(event.message);
+      messageRef.current = event.message;
       break;
     }
 
@@ -206,11 +210,19 @@ function processEvent(
       const idx = event.index;
       const block = contentBlocks[idx];
       if (block?.type === "tool_use") {
+        let input: Record<string, unknown> = {};
+        if (block.inputJson) {
+          try {
+            input = JSON.parse(block.inputJson) as Record<string, unknown>;
+          } catch {
+            // Malformed JSON — fall back to empty object
+          }
+        }
         const toolUse: ToolUseBlock = {
           type: "tool_use",
           id: block.id ?? "",
           name: block.name ?? "",
-          input: block.inputJson ? JSON.parse(block.inputJson) : {},
+          input,
         };
         toolUses.push(toolUse);
         callbacks?.onToolUseComplete?.(toolUse);
@@ -219,9 +231,16 @@ function processEvent(
     }
 
     case "message_delta": {
-      // Stop reason and usage are updated on the message_stop event.
-      // We track them but the final message object already carries the metadata
-      // from the API — we just ensure our accumulated content is correct.
+      // Merge output token usage from the delta event into the accumulated message.
+      // The message_start event provides input_tokens; message_delta provides output_tokens.
+      if (messageRef.current) {
+        messageRef.current.usage = {
+          ...messageRef.current.usage,
+          ...event.usage,
+        };
+        messageRef.current.stop_reason = event.delta.stop_reason;
+        messageRef.current.stop_sequence = event.delta.stop_sequence;
+      }
       break;
     }
 
@@ -252,4 +271,30 @@ function isTransientError(error: unknown): boolean {
     message.includes("ECONNREFUSED") ||
     message.includes("socket hang up")
   );
+}
+
+/**
+ * Calculate retry delay with exponential backoff, jitter, and Retry-After support.
+ *
+ * For 429 errors, prefers the Retry-After header if present.
+ * Otherwise uses exponential backoff with random jitter to avoid thundering herd.
+ */
+function calculateRetryDelay(attempt: number, error: unknown): number {
+  // Check for Retry-After header on 429 errors
+  const status = (error as { status?: number }).status;
+  if (status === 429) {
+    const headers = (error as { headers?: Record<string, string> }).headers;
+    const retryAfter = headers?.["retry-after"];
+    if (retryAfter) {
+      const seconds = parseInt(retryAfter, 10);
+      if (!isNaN(seconds) && seconds > 0) {
+        return seconds * 1000;
+      }
+    }
+  }
+
+  // Exponential backoff with jitter
+  const baseDelay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+  const jitter = 0.5 + Math.random(); // Random factor between 0.5 and 1.5
+  return Math.floor(baseDelay * jitter);
 }
