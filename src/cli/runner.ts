@@ -31,6 +31,7 @@ import {
   ToolExecutor,
   registerBuiltInTools,
 } from "../tools/index.js";
+import { ConfirmationHandler } from "./confirm.js";
 
 // ---------------------------------------------------------------------------
 // Default system prompt
@@ -54,6 +55,7 @@ interface CliOptions {
   model: string;
   apiKey?: string;
   message?: string;
+  yes: boolean;
   help: boolean;
 }
 
@@ -70,6 +72,11 @@ function parseCliArgs(): CliOptions {
       message: {
         type: "string",
         short: "m",
+      },
+      yes: {
+        type: "boolean",
+        short: "y",
+        default: false,
       },
       help: {
         type: "boolean",
@@ -88,6 +95,7 @@ function parseCliArgs(): CliOptions {
     model: values.model as string,
     apiKey: values["api-key"] as string | undefined,
     message: (values.message as string | undefined) ?? positionalMessage,
+    yes: values.yes as boolean,
     help: values.help as boolean,
   };
 }
@@ -105,10 +113,16 @@ export async function run(): Promise<void> {
     return;
   }
 
-  // ── Initialize tool registry ─────────────────────────────────────────
+  // ── Initialize tool registry and confirmation handler ────────────────
   const registry = new ToolRegistry();
   registerBuiltInTools(registry);
-  const executor = new ToolExecutor(registry);
+
+  const confirmHandler = new ConfirmationHandler({
+    autoApprove: options.yes,
+  });
+  const executor = new ToolExecutor(registry, {
+    confirmationHandler: confirmHandler,
+  });
 
   const spinner = ora("Initializing Claude Code CLI...").start();
 
@@ -126,17 +140,22 @@ export async function run(): Promise<void> {
   spinner.succeed(
     chalk.green(
       `Claude Code CLI ready. ${registry.size} tool(s) registered: ` +
-        registry.list().map((t) => t.name).join(", "),
+        registry.list().map((t) => t.name).join(", ") +
+        (options.yes ? chalk.dim("  (--yes: auto-approve enabled)") : ""),
     ),
   );
 
   // ── Dispatch ─────────────────────────────────────────────────────────
-  if (options.message) {
-    await runOnce(options.message, options.model, llmAvailable, registry, executor);
-    return;
-  }
+  try {
+    if (options.message) {
+      await runOnce(options.message, options.model, llmAvailable, registry, executor);
+      return;
+    }
 
-  await startRepl(options.model, llmAvailable, registry, executor);
+    await startRepl(options.model, llmAvailable, registry, executor);
+  } finally {
+    confirmHandler.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +227,7 @@ async function processUserMessage(
         );
       },
       onError: (error) => {
-        console.error(chalk.red(`\n  [Error] ${error.message}`));
+        console.error(chalk.red(`\n  ${classifyApiError(error)}`));
       },
     };
 
@@ -402,11 +421,8 @@ async function handleUserInput(
   try {
     await processUserMessage(input, conversation, registry, executor);
   } catch (error) {
-    console.error(
-      chalk.red(
-        `\nError: ${error instanceof Error ? error.message : "Unknown error"}`,
-      ),
-    );
+    const friendly = classifyApiError(error);
+    console.error(chalk.red(`\n${friendly}`));
   }
 
   console.log(); // blank line between exchanges
@@ -427,6 +443,7 @@ ${chalk.bold("Options:")}
   --model <model>     Model to use          ${chalk.dim(`(default: ${DEFAULT_MODEL})`)}
   --api-key <key>     Anthropic API key     ${chalk.dim("(or set ANTHROPIC_API_KEY)")}
   -m, --message <msg> Send a single message and exit
+  -y, --yes           Auto-approve tool actions (skip confirmation prompts)
   --help              Show this help message
 
 ${chalk.bold("Examples:")}
@@ -434,11 +451,21 @@ ${chalk.bold("Examples:")}
   claude-code "explain async/await"             ${chalk.dim("# One-shot question")}
   claude-code --model claude-opus-4-20250514    ${chalk.dim("# Use a different model")}
   claude-code --api-key sk-xxx "hello"          ${chalk.dim("# Inline API key")}
+  claude-code --yes "fix the bug in auth.ts"    ${chalk.dim("# Skip tool confirmations")}
 
 ${chalk.bold("Interactive REPL commands:")}
   /clear            ${chalk.dim("# Reset conversation history")}
   /help             ${chalk.dim("# Show REPL help")}
   exit, quit, :q    ${chalk.dim("# Exit the REPL")}
+
+${chalk.bold("Available tools:")}
+  read_file         ${chalk.dim("# Read file contents (with line numbers)")}
+  write_file        ${chalk.dim("# Create or overwrite files")}
+  bash              ${chalk.dim("# Execute shell commands")}
+  list_files        ${chalk.dim("# List directory contents (supports glob)")}
+
+  ${chalk.dim("Tools that modify files or execute commands will ask for confirmation")}
+  ${chalk.dim("unless --yes is passed.")}
 `.trimStart();
 
   console.log(help);
@@ -470,6 +497,94 @@ function printBanner(model: string, llmAvailable: boolean): void {
   console.log(
     chalk.dim('  Type "/help" for commands, or "exit" to quit.\n'),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Error classification — friendly messages for common API errors
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert an API error into a user-friendly message with actionable hints.
+ *
+ * Handles:
+ *   - 401 Authentication (invalid/missing API key)
+ *   - 403 Forbidden (key lacks permission)
+ *   - 404 Not found (invalid model)
+ *   - 429 Rate limit
+ *   - 5xx Server errors
+ *   - Network errors (ECONNREFUSED, ECONNRESET, ETIMEDOUT, ENOTFOUND)
+ */
+function classifyApiError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Error: Unknown error occurred";
+  }
+
+  const status = (error as { status?: number }).status;
+  const message = error.message ?? "";
+
+  // ── HTTP status-based errors ─────────────────────────────────────────
+  if (status === 401) {
+    return [
+      "Authentication failed: your API key is invalid or expired.",
+      "",
+      "  Fix: Set the ANTHROPIC_API_KEY environment variable, or pass --api-key.",
+      "  Get a key at: https://console.anthropic.com/settings/keys",
+    ].join("\n");
+  }
+
+  if (status === 403) {
+    return [
+      "Access denied: your API key does not have permission for this action.",
+      "",
+      "  Fix: Check your API key's permissions at https://console.anthropic.com",
+    ].join("\n");
+  }
+
+  if (status === 404) {
+    return `Model not found: the requested model may not exist. Check --model and try again.\n  Details: ${message}`;
+  }
+
+  if (status === 429) {
+    return [
+      "Rate limit exceeded — too many requests.",
+      "",
+      "  Fix: Wait a moment and try again. The CLI will auto-retry on transient limits.",
+    ].join("\n");
+  }
+
+  if (status !== undefined && status >= 500) {
+    return `Anthropic API server error (${status}). The service may be experiencing issues.\n  Fix: Wait a moment and try again.`;
+  }
+
+  // ── Network-level errors ─────────────────────────────────────────────
+  if (
+    message.includes("ECONNREFUSED") ||
+    message.includes("ENOTFOUND") ||
+    message.includes("getaddrinfo")
+  ) {
+    return [
+      "Cannot connect to the Anthropic API.",
+      "",
+      "  Fix: Check your internet connection and DNS settings.",
+      "  If behind a proxy, set HTTPS_PROXY or pass --base-url.",
+    ].join("\n");
+  }
+
+  if (message.includes("ETIMEDOUT") || message.includes("timeout")) {
+    return [
+      "Connection timed out while reaching the Anthropic API.",
+      "",
+      "  Fix: Check your network connection. If behind a slow proxy,",
+      "  try increasing the timeout or using a direct connection.",
+    ].join("\n");
+  }
+
+  if (message.includes("ECONNRESET") || message.includes("socket hang up")) {
+    return "Connection to the Anthropic API was reset. Retrying automatically on the next message.";
+  }
+
+  // ── Fallback ─────────────────────────────────────────────────────────
+  return `Error: ${message}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ export class BashTool extends BaseTool {
     "Execute a shell command and return its output. Captures both stdout " +
     "and stderr. Supports a configurable timeout (default 120 seconds). " +
     "Long output is automatically truncated to prevent context overflow.";
+  override readonly requiresConfirmation = true;
 
   readonly inputSchema: JSONSchema = {
     type: "object",
