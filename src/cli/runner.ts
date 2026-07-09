@@ -129,8 +129,8 @@ export async function run(): Promise<void> {
     console.log(chalk.yellow(`  Unknown theme "${themeName}", using default.`));
     setActiveTheme("default");
   }
-  // Persist the theme choice if it came from --theme flag
-  if (options.theme && options.theme !== configManager.get("theme")) {
+  // Persist the theme choice only when it is valid and came from --theme flag
+  if (options.theme && setActiveTheme(options.theme)) {
     configManager.set("theme", options.theme);
   }
 
