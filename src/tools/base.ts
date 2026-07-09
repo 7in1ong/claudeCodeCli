@@ -65,6 +65,14 @@ export abstract class BaseTool {
   abstract readonly inputSchema: JSONSchema;
 
   /**
+   * Whether this tool requires user confirmation before execution.
+   * Defaults to false — read-only tools (e.g. read_file, list_files)
+   * do not need approval. Mutating tools (bash, write_file) should
+   * override this to true.
+   */
+  readonly requiresConfirmation: boolean = false;
+
+  /**
    * Execute the tool with the given parameters.
    *
    * @param params - Input parameters matching the inputSchema definition.

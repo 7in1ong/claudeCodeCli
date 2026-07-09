@@ -9,7 +9,11 @@
 
 export { BaseTool, type ToolResult, type JSONSchema } from "./base.js";
 export { ToolRegistry, type AnthropicToolFormat } from "./registry.js";
-export { ToolExecutor } from "./executor.js";
+export {
+  ToolExecutor,
+  type ConfirmationHandlerLike,
+  type ToolExecutorOptions,
+} from "./executor.js";
 
 // Built-in tools
 export { ReadFileTool } from "./read-file.js";

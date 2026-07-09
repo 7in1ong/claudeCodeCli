@@ -16,6 +16,7 @@ export class WriteFileTool extends BaseTool {
     "Create or overwrite a file at the given path. Parent directories are " +
     "created automatically if they do not exist. Returns the number of bytes " +
     "written and whether the file was newly created or updated.";
+  override readonly requiresConfirmation = true;
 
   readonly inputSchema: JSONSchema = {
     type: "object",
