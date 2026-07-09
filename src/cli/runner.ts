@@ -32,6 +32,11 @@ import {
   registerBuiltInTools,
 } from "../tools/index.js";
 import { ConfirmationHandler } from "./confirm.js";
+import {
+  SlashCommandRegistry,
+  registerBuiltInCommands,
+} from "../commands/index.js";
+import type { CommandContext, CommandConfig } from "../commands/context.js";
 
 // ---------------------------------------------------------------------------
 // Default system prompt
@@ -117,6 +122,10 @@ export async function run(): Promise<void> {
   const registry = new ToolRegistry();
   registerBuiltInTools(registry);
 
+  // ── Initialize slash command registry ─────────────────────────────────
+  const commandRegistry = new SlashCommandRegistry();
+  registerBuiltInCommands(commandRegistry);
+
   const confirmHandler = new ConfirmationHandler({
     autoApprove: options.yes,
   });
@@ -145,6 +154,13 @@ export async function run(): Promise<void> {
     ),
   );
 
+  // ── Build shared command config ───────────────────────────────────────
+  const commandConfig: CommandConfig = {
+    model: options.model,
+    theme: "default",
+    llmAvailable,
+  };
+
   // ── Dispatch ─────────────────────────────────────────────────────────
   try {
     if (options.message) {
@@ -152,7 +168,7 @@ export async function run(): Promise<void> {
       return;
     }
 
-    await startRepl(options.model, llmAvailable, registry, executor);
+    await startRepl(options.model, llmAvailable, registry, executor, commandRegistry, commandConfig);
   } finally {
     confirmHandler.close();
   }
@@ -304,6 +320,8 @@ async function startRepl(
   llmAvailable: boolean,
   registry: ToolRegistry,
   executor: ToolExecutor,
+  commandRegistry: SlashCommandRegistry,
+  commandConfig: CommandConfig,
 ): Promise<void> {
   const conversation = new ConversationManager({
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
@@ -317,6 +335,14 @@ async function startRepl(
     prompt: chalk.green("> "),
     terminal: true,
   });
+
+  // Build the command context once — shared across all command invocations
+  const commandContext: CommandContext = {
+    conversation: conversation,
+    toolRegistry: registry,
+    config: commandConfig,
+    requestExit: () => rl.close(),
+  };
 
   // Ctrl+C → graceful exit
   rl.on("SIGINT", () => {
@@ -334,10 +360,10 @@ async function startRepl(
       const firstPart = trimmed.slice(0, -1);
       const fullInput = await readMultiLine(rl, firstPart);
       if (fullInput.trim()) {
-        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor);
+        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor, commandRegistry, commandContext);
       }
     } else if (trimmed.trim()) {
-      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor);
+      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, commandRegistry, commandContext);
     }
 
     rl.prompt();
@@ -383,7 +409,7 @@ async function readMultiLine(
 }
 
 /**
- * Route user input: handle slash commands, then delegate to LLM or mock.
+ * Route user input: handle slash commands via the registry, then delegate to LLM or mock.
  */
 async function handleUserInput(
   input: string,
@@ -391,19 +417,23 @@ async function handleUserInput(
   llmAvailable: boolean,
   registry: ToolRegistry,
   executor: ToolExecutor,
+  commandRegistry: SlashCommandRegistry,
+  commandContext: CommandContext,
 ): Promise<void> {
-  // ── Slash commands ───────────────────────────────────────────────────
-  if (input === "/clear") {
-    conversation.reset();
-    console.log(chalk.yellow("  Conversation cleared."));
-    return;
-  }
-  if (input === "/help") {
-    printReplHelp();
+  // ── Slash commands (via registry) ────────────────────────────────────
+  if (input.startsWith("/")) {
+    const resolved = commandRegistry.resolve(input);
+    if (resolved) {
+      await resolved.command.execute(resolved.args, commandContext);
+      return;
+    }
+    // Unknown slash command — show a helpful message
+    console.log(chalk.red(`  Unknown command: ${input.split(/\s+/)[0]}`));
+    console.log(chalk.dim('  Type "/help" for available commands.'));
     return;
   }
 
-  // ── Exit commands ────────────────────────────────────────────────────
+  // ── Exit commands (non-slash: exit, quit, :q, :qa) ──────────────────
   if (isExitCommand(input)) {
     console.log(chalk.dim("Goodbye!"));
     process.exit(0);
@@ -455,7 +485,12 @@ ${chalk.bold("Examples:")}
 
 ${chalk.bold("Interactive REPL commands:")}
   /clear            ${chalk.dim("# Reset conversation history")}
-  /help             ${chalk.dim("# Show REPL help")}
+  /help             ${chalk.dim("# Show all available commands")}
+  /model <name>     ${chalk.dim("# Switch LLM model at runtime")}
+  /theme <name>     ${chalk.dim("# Switch CLI theme")}
+  /config [k] [v]   ${chalk.dim("# View or modify configuration")}
+  /status           ${chalk.dim("# Show current CLI status")}
+  /tools            ${chalk.dim("# List available tools")}
   exit, quit, :q    ${chalk.dim("# Exit the REPL")}
 
 ${chalk.bold("Available tools:")}
@@ -469,15 +504,6 @@ ${chalk.bold("Available tools:")}
 `.trimStart();
 
   console.log(help);
-}
-
-function printReplHelp(): void {
-  console.log(chalk.dim("  Commands:"));
-  console.log(chalk.dim("    /clear   — Reset conversation history"));
-  console.log(chalk.dim("    /help    — Show this help"));
-  console.log(chalk.dim("    exit     — Exit the REPL (or Ctrl+C, Ctrl+D)"));
-  console.log(chalk.dim('  Use "\\" at end of line for multi-line input,'));
-  console.log(chalk.dim('  then "." on its own line to finish.'));
 }
 
 function printBanner(model: string, llmAvailable: boolean): void {
