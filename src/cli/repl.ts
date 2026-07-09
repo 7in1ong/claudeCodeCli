@@ -2,7 +2,7 @@
  * Interactive REPL
  *
  * Manages the readline-based interactive loop: prompt display,
- * multi-line input continuation, slash command routing (/clear, /help),
+ * multi-line input continuation, slash command routing (via registry),
  * exit detection, and dispatching user input to either mock mode
  * or the agentic loop.
  */
@@ -16,15 +16,11 @@ import { processUserMessage } from "./agentic-loop.js";
 import { mockResponse } from "./mock.js";
 import { classifyApiError } from "../utils/errors.js";
 import { DEFAULT_SYSTEM_PROMPT, CLI_VERSION } from "../config/defaults.js";
-
-/**
- * REPL command descriptors passed to Renderer.renderHelp().
- */
-const REPL_COMMANDS = [
-  { name: "/clear", description: "Reset conversation history" },
-  { name: "/help", description: "Show this help" },
-  { name: "exit", description: "Exit the REPL (or Ctrl+C, Ctrl+D)" },
-];
+import {
+  SlashCommandRegistry,
+  validateArgs,
+} from "../commands/index.js";
+import type { CommandContext, CommandConfig } from "../commands/context.js";
 
 /**
  * Start the interactive REPL.
@@ -39,6 +35,8 @@ export async function startRepl(
   registry: ToolRegistry,
   executor: ToolExecutor,
   renderer: Renderer,
+  commandRegistry: SlashCommandRegistry,
+  commandConfig: CommandConfig,
 ): Promise<void> {
   const conversation = new ConversationManager({
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
@@ -52,6 +50,15 @@ export async function startRepl(
     prompt: chalk.green("> "),
     terminal: true,
   });
+
+  // Build the command context once — shared across all command invocations
+  const commandContext: CommandContext = {
+    conversation,
+    toolRegistry: registry,
+    renderer,
+    config: commandConfig,
+    requestExit: () => rl.close(),
+  };
 
   // Ctrl+C → graceful exit
   rl.on("SIGINT", () => {
@@ -69,10 +76,10 @@ export async function startRepl(
       const firstPart = trimmed.slice(0, -1);
       const fullInput = await readMultiLine(rl, firstPart);
       if (fullInput.trim()) {
-        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor, renderer);
+        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor, renderer, commandRegistry, commandContext);
       }
     } else if (trimmed.trim()) {
-      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, renderer);
+      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, renderer, commandRegistry, commandContext);
     }
 
     rl.prompt();
@@ -118,7 +125,7 @@ async function readMultiLine(
 }
 
 /**
- * Route user input: handle slash commands, then delegate to LLM or mock.
+ * Route user input: handle slash commands via the registry, then delegate to LLM or mock.
  */
 async function handleUserInput(
   input: string,
@@ -127,19 +134,34 @@ async function handleUserInput(
   registry: ToolRegistry,
   executor: ToolExecutor,
   renderer: Renderer,
+  commandRegistry: SlashCommandRegistry,
+  commandContext: CommandContext,
 ): Promise<void> {
-  // ── Slash commands ───────────────────────────────────────────────────
-  if (input === "/clear") {
-    conversation.reset();
-    renderer.renderSystemMessage("  Conversation cleared.");
-    return;
-  }
-  if (input === "/help") {
-    renderer.renderHelp(REPL_COMMANDS);
+  // ── Slash commands (via registry) ────────────────────────────────────
+  if (input.startsWith("/")) {
+    const resolved = commandRegistry.resolve(input);
+    if (resolved) {
+      // Validate required arguments before executing
+      const errors = validateArgs(resolved.args, resolved.command.args);
+      if (errors.length > 0) {
+        for (const err of errors) {
+          renderer.renderError(err.message);
+        }
+        return;
+      }
+
+      await resolved.command.execute(resolved.args, commandContext);
+      return;
+    }
+    // Unknown slash command — show a helpful message
+    renderer.renderError(
+      `Unknown command: ${input.split(/\s+/)[0]}`,
+      'Type "/help" for available commands.',
+    );
     return;
   }
 
-  // ── Exit commands ────────────────────────────────────────────────────
+  // ── Exit commands (non-slash: exit, quit, :q, :qa) ──────────────────
   if (isExitCommand(input)) {
     renderer.renderSystemMessage("Goodbye!");
     process.exit(0);

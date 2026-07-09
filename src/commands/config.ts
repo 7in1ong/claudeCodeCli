@@ -9,7 +9,8 @@
  *   /config <key> <value>      Set a configuration item
  *
  * Configuration items are stored in CommandContext.config and persist
- * for the lifetime of the current CLI session.
+ * for the lifetime of the current CLI session. Only whitelisted keys
+ * can be written — arbitrary keys are rejected with a warning.
  */
 
 import chalk from "chalk";
@@ -17,12 +18,19 @@ import { SlashCommand } from "./base.js";
 import type { CommandContext } from "./context.js";
 import type { ParsedArgs } from "./parser.js";
 import type { ArgDefinition } from "./base.js";
+import { resetClient } from "../llm/client.js";
 
 /**
  * Keys that are displayed when listing all config items.
- * Internal/context keys (like llmAvailable, requestExit) are excluded.
+ * Internal/context keys (like llmAvailable) are excluded.
  */
-const DISPLAY_KEYS = ["model", "theme"];
+const DISPLAY_KEYS = ["model", "theme"] as const;
+
+/**
+ * Keys that users are allowed to write via /config.
+ * Attempting to set a key not in this list is rejected.
+ */
+const WRITABLE_KEYS = new Set<string>(["model", "theme"]);
 
 export class ConfigCommand extends SlashCommand {
   readonly name = "config";
@@ -66,18 +74,19 @@ export class ConfigCommand extends SlashCommand {
       return;
     }
 
-    // /config <key> <value> — set a key
+    // /config <key> <value> — set a key (whitelist check)
+    if (!WRITABLE_KEYS.has(key)) {
+      console.log(chalk.red(`  Cannot write to key "${key}" — not a configurable setting.`));
+      console.log(chalk.dim(`  Writable keys: ${Array.from(WRITABLE_KEYS).join(", ")}`));
+      return;
+    }
+
     if (key === "model") {
-      // Delegate to the model-switching logic: update config and reset client
+      // Update config and reset the LLM client so the next call uses the new model
       context.config.model = value;
-      // Lazy import to avoid circular dependency at module load time
-      const { resetClient } = await import("../llm/client.js");
       resetClient();
     } else if (key === "theme") {
       context.config.theme = value;
-    } else {
-      // Generic key: store as-is
-      context.config[key] = value;
     }
 
     console.log(chalk.green(`  Set `) + chalk.cyan(key) + chalk.green(` = `) + chalk.cyan(value));

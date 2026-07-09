@@ -8,8 +8,13 @@
  *   /theme <name>        Switch to the specified theme
  *   /theme               Show the current theme and available themes
  *
- * Note: The current implementation provides a placeholder theme system.
- * The actual theme rendering hooks into the chalk-based output in runner.ts.
+ * PLACEHOLDER: This command records the theme preference in config but
+ * does not yet change the actual rendering output. Full theme integration
+ * (applying colors to all chalk output via the Theme system defined in
+ * BUT-5) is pending — once BUT-5's Theme system lands, this command will
+ * call `themeRegistry.setTheme(name)` and the runner will read from it.
+ *
+ * Available themes match BUT-5's spec: default, dark, light.
  */
 
 import chalk from "chalk";
@@ -18,8 +23,11 @@ import type { CommandContext } from "./context.js";
 import type { ParsedArgs } from "./parser.js";
 import type { ArgDefinition } from "./base.js";
 
-/** Built-in theme names. Extend this as themes are added. */
-const AVAILABLE_THEMES = ["default", "dark", "light", "monokai"] as const;
+/**
+ * Built-in theme names matching the BUT-5 Theme system spec.
+ * Extend this list when additional themes are registered.
+ */
+const AVAILABLE_THEMES = ["default", "dark", "light"] as const;
 
 export class ThemeCommand extends SlashCommand {
   readonly name = "theme";
@@ -48,7 +56,9 @@ export class ThemeCommand extends SlashCommand {
       return;
     }
 
+    // Record the preference. Actual rendering integration is deferred to BUT-5.
     context.config.theme = themeName;
-    console.log(chalk.green(`  Theme switched to: `) + chalk.cyan(themeName));
+    console.log(chalk.green(`  Theme preference set to: `) + chalk.cyan(themeName));
+    console.log(chalk.dim(`  (visual theme switching will activate once the Theme system is integrated)`));
   }
 }

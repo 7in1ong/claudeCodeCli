@@ -41,9 +41,6 @@ export class ModelCommand extends SlashCommand {
     context.config.model = modelName;
     resetClient();
 
-    // Re-initialize the client with the new model on the next API call.
-    // resetClient() sets client=null, and getClient() will pick up
-    // context.config.model when called next.
     console.log(chalk.green(`  Model switched to: `) + chalk.cyan(modelName));
   }
 }

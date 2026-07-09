@@ -67,6 +67,11 @@ export function parseCliArgs(): CliOptions {
 
 /**
  * Print full CLI usage help to stdout.
+ *
+ * NOTE: The REPL command list below is manually maintained and must be
+ * kept in sync with the commands registered in registerBuiltInCommands()
+ * (see src/commands/index.ts). The in-REPL /help command auto-generates
+ * its listing from the registry, but this CLI --help output is static text.
  */
 export function printHelp(): void {
   const help = `
@@ -91,7 +96,12 @@ ${chalk.bold("Examples:")}
 
 ${chalk.bold("Interactive REPL commands:")}
   /clear            ${chalk.dim("# Reset conversation history")}
-  /help             ${chalk.dim("# Show REPL help")}
+  /help             ${chalk.dim("# Show all available commands")}
+  /model <name>     ${chalk.dim("# Switch LLM model at runtime")}
+  /theme <name>     ${chalk.dim("# Switch CLI theme")}
+  /config [k] [v]   ${chalk.dim("# View or modify configuration")}
+  /status           ${chalk.dim("# Show current CLI status")}
+  /tools            ${chalk.dim("# List available tools")}
   exit, quit, :q    ${chalk.dim("# Exit the REPL")}
 
 ${chalk.bold("Available tools:")}

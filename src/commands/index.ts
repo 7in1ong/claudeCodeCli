@@ -12,7 +12,7 @@
 // Framework core
 export { SlashCommand, type ArgDefinition } from "./base.js";
 export { SlashCommandRegistry } from "./registry.js";
-export { parseCommandInput, type ParsedArgs } from "./parser.js";
+export { parseCommandInput, validateArgs, type ParsedArgs, type ParseValidationError } from "./parser.js";
 export type { CommandContext, CommandConfig } from "./context.js";
 
 // Built-in commands

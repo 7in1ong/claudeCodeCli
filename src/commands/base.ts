@@ -67,7 +67,7 @@ export abstract class SlashCommand {
    * Execute the command.
    *
    * @param args    - Parsed arguments (positional + named flags).
-   * @param context - Runtime context (conversation, tools, config).
+   * @param context - Runtime context (conversation, tools, renderer, config).
    */
   abstract execute(args: ParsedArgs, context: CommandContext): Promise<void>;
 }

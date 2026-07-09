@@ -3,9 +3,6 @@
  *
  * Lists all tools currently registered in the ToolRegistry,
  * showing each tool's name, confirmation requirement, and description.
- *
- * Usage:
- *   /tools
  */
 
 import chalk from "chalk";
@@ -21,7 +18,7 @@ export class ToolsCommand extends SlashCommand {
     const tools = context.toolRegistry.list();
 
     if (tools.length === 0) {
-      console.log(chalk.dim("  No tools registered."));
+      context.renderer.renderSystemMessage("  No tools registered.");
       return;
     }
 

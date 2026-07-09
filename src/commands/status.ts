@@ -3,9 +3,6 @@
  *
  * Displays a snapshot of the current CLI state: model, API connectivity,
  * theme, token usage, and conversation statistics.
- *
- * Usage:
- *   /status
  */
 
 import chalk from "chalk";
