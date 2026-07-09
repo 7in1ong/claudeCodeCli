@@ -26,8 +26,6 @@ export interface ToolResult {
   content: string;
   /** Error message when success is false. */
   error?: string;
-  /** Whether user confirmation is required before applying the result. */
-  needsConfirmation?: boolean;
 }
 
 /**
@@ -68,7 +66,7 @@ export abstract class BaseTool {
    * Execute the tool with the given parameters.
    *
    * @param params - Input parameters matching the inputSchema definition.
-   * @returns A ToolResult indicating success, failure, or need for confirmation.
+   * @returns A ToolResult indicating success or failure.
    */
   abstract execute(params: Record<string, unknown>): Promise<ToolResult>;
 }
