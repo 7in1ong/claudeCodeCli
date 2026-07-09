@@ -28,3 +28,6 @@ export type {
 } from "./types.js";
 
 export { DEFAULT_MODEL, DEFAULT_MAX_TOKENS } from "./types.js";
+export { getClient } from "./client.js";
+export { ConversationManager } from "./conversation.js";
+export type { ConversationOptions, ConversationState } from "./conversation.js";
