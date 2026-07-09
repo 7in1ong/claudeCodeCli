@@ -50,33 +50,66 @@ function estimateTokens(text: string): number {
 }
 
 /**
- * Estimate tokens for a content block array by summing the text content
- * of each block. Non-text blocks (tool_use, tool_result) contribute a
- * small fixed overhead to approximate their serialized form.
+ * Fixed token estimates for non-text content blocks.
+ * These are conservative approximations — actual costs vary by model and content.
  */
+const IMAGE_TOKEN_ESTIMATE = 1000;
+const DOCUMENT_TOKEN_ESTIMATE = 500;
+const THINKING_TOKEN_ESTIMATE = 200;
+
 function estimateContentTokens(content: string | ContentBlockParam[]): number {
   if (typeof content === "string") {
     return estimateTokens(content);
   }
   let total = 0;
   for (const block of content) {
-    if ("text" in block && typeof block.text === "string") {
-      total += estimateTokens(block.text);
-    } else if (block.type === "tool_use") {
-      // tool_use blocks carry name + serialized input
-      const toolBlock = block as ToolUseBlockParam;
-      total += estimateTokens(toolBlock.name) + estimateTokens(JSON.stringify(toolBlock.input));
-    } else if (block.type === "tool_result") {
-      const resultBlock = block as ToolResultBlockParam;
-      if (typeof resultBlock.content === "string") {
-        total += estimateTokens(resultBlock.content);
-      } else if (Array.isArray(resultBlock.content)) {
-        for (const sub of resultBlock.content) {
-          if ("text" in sub && typeof sub.text === "string") {
-            total += estimateTokens(sub.text);
+    switch (block.type) {
+      case "text": {
+        // TextBlockParam
+        if ("text" in block && typeof block.text === "string") {
+          total += estimateTokens(block.text);
+        }
+        break;
+      }
+      case "tool_use": {
+        const toolBlock = block as ToolUseBlockParam;
+        total += estimateTokens(toolBlock.name) + estimateTokens(JSON.stringify(toolBlock.input));
+        break;
+      }
+      case "tool_result": {
+        const resultBlock = block as ToolResultBlockParam;
+        if (typeof resultBlock.content === "string") {
+          total += estimateTokens(resultBlock.content);
+        } else if (Array.isArray(resultBlock.content)) {
+          for (const sub of resultBlock.content) {
+            if ("text" in sub && typeof sub.text === "string") {
+              total += estimateTokens(sub.text);
+            }
           }
         }
+        break;
       }
+      case "image":
+        total += IMAGE_TOKEN_ESTIMATE;
+        break;
+      case "document":
+        total += DOCUMENT_TOKEN_ESTIMATE;
+        break;
+      case "thinking": {
+        // ThinkingBlockParam carries a thinking string
+        if ("thinking" in block && typeof block.thinking === "string") {
+          total += estimateTokens(block.thinking);
+        } else {
+          total += THINKING_TOKEN_ESTIMATE;
+        }
+        break;
+      }
+      case "redacted_thinking":
+        total += THINKING_TOKEN_ESTIMATE;
+        break;
+      default:
+        // Unknown block type — add a small overhead for structure tokens
+        break;
     }
     // Add a small overhead per block for type/structure tokens
     total += 4;
@@ -246,6 +279,26 @@ export class ConversationManager {
           this.messages.shift();
           removed++;
         }
+      }
+    }
+
+    // Post-process: remove orphaned tool_result messages at the start.
+    // If the first message is a user message containing only tool_result
+    // blocks, its corresponding assistant(tool_use) was dropped above.
+    // The API requires tool_result to follow tool_use, so we must remove
+    // these orphaned messages to avoid 400 errors.
+    while (this.messages.length > 0) {
+      const first = this.messages[0];
+      if (
+        first.role === "user" &&
+        Array.isArray(first.content) &&
+        first.content.every((b) => b.type === "tool_result")
+      ) {
+        this.tokenCount -= estimateContentTokens(first.content);
+        this.messages.shift();
+        removed++;
+      } else {
+        break;
       }
     }
 
