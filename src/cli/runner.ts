@@ -5,11 +5,11 @@
  * tool registration, and dispatching to the main conversation loop.
  *
  * Features:
- *   - --model / --api-key / --message flags
+ *   - --model / --api-key / --message / --theme flags
  *   - Positional args concatenated as a one-shot message
  *   - Interactive REPL with multi-line input (trailing \)
  *   - Ctrl+C graceful exit, Ctrl+D (EOF) exit
- *   - /clear and /help slash commands
+ *   - /clear, /help, and /theme slash commands
  *   - Mock mode when no API key is configured
  *   - Full integration: getClient() → ConversationManager → streamMessage → ToolExecutor
  */
@@ -32,6 +32,8 @@ import {
   registerBuiltInTools,
 } from "../tools/index.js";
 import { ConfirmationHandler } from "./confirm.js";
+import { ConfigManager } from "../config/config-manager.js";
+import { getActiveTheme, setActiveTheme, listThemeNames } from "../ui/themes/index.js";
 
 // ---------------------------------------------------------------------------
 // Default system prompt
@@ -55,6 +57,7 @@ interface CliOptions {
   model: string;
   apiKey?: string;
   message?: string;
+  theme?: string;
   yes: boolean;
   help: boolean;
 }
@@ -72,6 +75,9 @@ function parseCliArgs(): CliOptions {
       message: {
         type: "string",
         short: "m",
+      },
+      theme: {
+        type: "string",
       },
       yes: {
         type: "boolean",
@@ -95,6 +101,7 @@ function parseCliArgs(): CliOptions {
     model: values.model as string,
     apiKey: values["api-key"] as string | undefined,
     message: (values.message as string | undefined) ?? positionalMessage,
+    theme: values.theme as string | undefined,
     yes: values.yes as boolean,
     help: values.help as boolean,
   };
@@ -112,6 +119,22 @@ export async function run(): Promise<void> {
     printHelp();
     return;
   }
+
+  // ── Load config and apply theme ──────────────────────────────────────
+  const configManager = new ConfigManager();
+
+  // CLI --theme flag overrides config; fall back to config value
+  const themeName = options.theme ?? configManager.get("theme");
+  if (!setActiveTheme(themeName)) {
+    console.log(chalk.yellow(`  Unknown theme "${themeName}", using default.`));
+    setActiveTheme("default");
+  }
+  // Persist the theme choice if it came from --theme flag
+  if (options.theme && options.theme !== configManager.get("theme")) {
+    configManager.set("theme", options.theme);
+  }
+
+  const theme = getActiveTheme();
 
   // ── Initialize tool registry and confirmation handler ────────────────
   const registry = new ToolRegistry();
@@ -138,10 +161,10 @@ export async function run(): Promise<void> {
   }
 
   spinner.succeed(
-    chalk.green(
+    theme.colors.success(
       `Claude Code CLI ready. ${registry.size} tool(s) registered: ` +
         registry.list().map((t) => t.name).join(", ") +
-        (options.yes ? chalk.dim("  (--yes: auto-approve enabled)") : ""),
+        (options.yes ? theme.colors.dim("  (--yes: auto-approve enabled)") : ""),
     ),
   );
 
@@ -152,7 +175,7 @@ export async function run(): Promise<void> {
       return;
     }
 
-    await startRepl(options.model, llmAvailable, registry, executor);
+    await startRepl(options.model, llmAvailable, registry, executor, configManager);
   } finally {
     confirmHandler.close();
   }
@@ -169,10 +192,11 @@ async function runOnce(
   registry: ToolRegistry,
   executor: ToolExecutor,
 ): Promise<void> {
-  console.log(chalk.blue("You: ") + message);
+  const theme = getActiveTheme();
+  console.log(theme.colors.user("You: ") + message);
 
   if (!llmAvailable) {
-    console.log(chalk.cyan(mockResponse(message)));
+    console.log(theme.colors.assistant(mockResponse(message)));
     return;
   }
 
@@ -196,13 +220,15 @@ async function processUserMessage(
   registry: ToolRegistry,
   executor: ToolExecutor,
 ): Promise<void> {
+  const theme = getActiveTheme();
+
   conversation.addUserMessage(input);
 
   // Truncate old messages when context window is exceeded
   if (conversation.needsTruncation()) {
     const removed = conversation.truncate();
     console.log(
-      chalk.yellow(
+      theme.colors.warning(
         `\n  (context truncated: dropped ${removed} old messages to stay within limits)`,
       ),
     );
@@ -213,21 +239,21 @@ async function processUserMessage(
   while (hasToolUse) {
     const callbacks: StreamCallbacks = {
       onTextDelta: (text) => {
-        process.stdout.write(chalk.cyan(text));
+        process.stdout.write(theme.colors.assistant(text));
       },
       onToolUseStart: ({ name }) => {
         console.log(
-          chalk.yellow(`\n  [Tool] ${name}`) + chalk.dim(" — executing..."),
+          theme.colors.tool(`\n  [Tool] ${name}`) + theme.colors.dim(" — executing..."),
         );
       },
       onToolUseComplete: ({ name, input }) => {
         console.log(
-          chalk.dim(`  [Tool] ${name} — input: `) +
-            chalk.dim(truncate(JSON.stringify(input), 120)),
+          theme.colors.dim(`  [Tool] ${name} — input: `) +
+            theme.colors.dim(truncate(JSON.stringify(input), 120)),
         );
       },
       onError: (error) => {
-        console.error(chalk.red(`\n  ${classifyApiError(error)}`));
+        console.error(theme.colors.error(`\n  ${classifyApiError(error)}`));
       },
     };
 
@@ -258,8 +284,10 @@ async function processUserMessage(
             : JSON.stringify(tr.content);
         const isError = tr.is_error ?? false;
         console.log(
-          chalk.magenta("  [Tool Result] ") +
-            (isError ? chalk.red(truncate(content, 200)) : chalk.dim(truncate(content, 200))),
+          theme.colors.toolResult("  [Tool Result] ") +
+            (isError
+              ? theme.colors.error(truncate(content, 200))
+              : theme.colors.dim(truncate(content, 200))),
         );
 
         // Record tool result in conversation (as a user-role message with
@@ -304,7 +332,10 @@ async function startRepl(
   llmAvailable: boolean,
   registry: ToolRegistry,
   executor: ToolExecutor,
+  configManager: ConfigManager,
 ): Promise<void> {
+  const theme = getActiveTheme();
+
   const conversation = new ConversationManager({
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
   });
@@ -314,13 +345,13 @@ async function startRepl(
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: chalk.green("> "),
+    prompt: theme.colors.prompt("> "),
     terminal: true,
   });
 
   // Ctrl+C → graceful exit
   rl.on("SIGINT", () => {
-    console.log(chalk.dim("\nGoodbye!"));
+    console.log(theme.colors.dim("\nGoodbye!"));
     rl.close();
   });
 
@@ -334,10 +365,10 @@ async function startRepl(
       const firstPart = trimmed.slice(0, -1);
       const fullInput = await readMultiLine(rl, firstPart);
       if (fullInput.trim()) {
-        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor);
+        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor, configManager);
       }
     } else if (trimmed.trim()) {
-      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor);
+      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, configManager);
     }
 
     rl.prompt();
@@ -345,7 +376,7 @@ async function startRepl(
 
   // EOF (Ctrl+D) — close gracefully
   rl.on("close", () => {
-    console.log(chalk.dim("Goodbye!"));
+    console.log(theme.colors.dim("Goodbye!"));
     process.exit(0);
   });
 }
@@ -360,16 +391,17 @@ async function readMultiLine(
   firstLine: string,
 ): Promise<string> {
   const lines: string[] = [firstLine];
+  const theme = getActiveTheme();
 
-  console.log(chalk.dim('  (multi-line mode: enter "." on its own line to finish)'));
+  console.log(theme.colors.dim('  (multi-line mode: enter "." on its own line to finish)'));
 
   return new Promise<string>((resolve) => {
-    rl.setPrompt(chalk.yellow("... "));
+    rl.setPrompt(theme.colors.warning("... "));
     rl.prompt();
 
     const onLine = (line: string) => {
       if (line.trim() === ".") {
-        rl.setPrompt(chalk.green("> "));
+        rl.setPrompt(theme.colors.prompt("> "));
         rl.removeListener("line", onLine);
         resolve(lines.join("\n"));
       } else {
@@ -391,30 +423,37 @@ async function handleUserInput(
   llmAvailable: boolean,
   registry: ToolRegistry,
   executor: ToolExecutor,
+  configManager: ConfigManager,
 ): Promise<void> {
+  const theme = getActiveTheme();
+
   // ── Slash commands ───────────────────────────────────────────────────
   if (input === "/clear") {
     conversation.reset();
-    console.log(chalk.yellow("  Conversation cleared."));
+    console.log(theme.colors.warning("  Conversation cleared."));
     return;
   }
   if (input === "/help") {
     printReplHelp();
     return;
   }
+  if (input.startsWith("/theme")) {
+    handleThemeCommand(input, configManager);
+    return;
+  }
 
   // ── Exit commands ────────────────────────────────────────────────────
   if (isExitCommand(input)) {
-    console.log(chalk.dim("Goodbye!"));
+    console.log(theme.colors.dim("Goodbye!"));
     process.exit(0);
   }
 
   // ── Display user message ─────────────────────────────────────────────
-  console.log(chalk.blue("You: ") + input);
+  console.log(theme.colors.user("You: ") + input);
 
   // ── Process through LLM or mock ──────────────────────────────────────
   if (!llmAvailable) {
-    console.log(chalk.cyan(mockResponse(input)));
+    console.log(theme.colors.assistant(mockResponse(input)));
     return;
   }
 
@@ -422,10 +461,47 @@ async function handleUserInput(
     await processUserMessage(input, conversation, registry, executor);
   } catch (error) {
     const friendly = classifyApiError(error);
-    console.error(chalk.red(`\n${friendly}`));
+    console.error(theme.colors.error(`\n${friendly}`));
   }
 
   console.log(); // blank line between exchanges
+}
+
+// ---------------------------------------------------------------------------
+// /theme command
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle the /theme slash command.
+ *
+ *   /theme           — list available themes and show the active one
+ *   /theme <name>    — switch to the named theme (immediate + persisted)
+ */
+function handleThemeCommand(input: string, configManager: ConfigManager): void {
+  const theme = getActiveTheme();
+  const parts = input.trim().split(/\s+/);
+  const requestedName = parts[1];
+
+  if (!requestedName) {
+    // List available themes
+    const names = listThemeNames();
+    console.log(theme.colors.dim("  Available themes:"));
+    for (const name of names) {
+      const marker = name === theme.name ? theme.colors.success(" ● ") : theme.colors.dim("   ");
+      console.log(marker + (name === theme.name ? theme.colors.success(name) : name));
+    }
+    console.log(theme.colors.dim(`  Use "/theme <name>" to switch.`));
+    return;
+  }
+
+  if (setActiveTheme(requestedName)) {
+    configManager.set("theme", requestedName);
+    const newTheme = getActiveTheme();
+    console.log(newTheme.colors.success(`  Theme switched to "${newTheme.displayName}".`));
+  } else {
+    const available = listThemeNames().join(", ");
+    console.log(theme.colors.warning(`  Unknown theme "${requestedName}". Available: ${available}`));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +509,7 @@ async function handleUserInput(
 // ---------------------------------------------------------------------------
 
 function printHelp(): void {
+  // Help is printed before theme is loaded, so use chalk directly
   const help = `
 ${chalk.bold("Claude Code CLI")} - An interactive CLI for Claude AI
 
@@ -443,6 +520,7 @@ ${chalk.bold("Options:")}
   --model <model>     Model to use          ${chalk.dim(`(default: ${DEFAULT_MODEL})`)}
   --api-key <key>     Anthropic API key     ${chalk.dim("(or set ANTHROPIC_API_KEY)")}
   -m, --message <msg> Send a single message and exit
+  --theme <name>      Theme to use          ${chalk.dim("(default, dark, light)")}
   -y, --yes           Auto-approve tool actions (skip confirmation prompts)
   --help              Show this help message
 
@@ -450,11 +528,14 @@ ${chalk.bold("Examples:")}
   claude-code                                   ${chalk.dim("# Start interactive REPL")}
   claude-code "explain async/await"             ${chalk.dim("# One-shot question")}
   claude-code --model claude-opus-4-20250514    ${chalk.dim("# Use a different model")}
+  claude-code --theme dark                      ${chalk.dim("# Use dark theme")}
   claude-code --api-key sk-xxx "hello"          ${chalk.dim("# Inline API key")}
   claude-code --yes "fix the bug in auth.ts"    ${chalk.dim("# Skip tool confirmations")}
 
 ${chalk.bold("Interactive REPL commands:")}
   /clear            ${chalk.dim("# Reset conversation history")}
+  /theme            ${chalk.dim("# List available themes")}
+  /theme <name>     ${chalk.dim("# Switch theme (persisted)")}
   /help             ${chalk.dim("# Show REPL help")}
   exit, quit, :q    ${chalk.dim("# Exit the REPL")}
 
@@ -472,30 +553,34 @@ ${chalk.bold("Available tools:")}
 }
 
 function printReplHelp(): void {
-  console.log(chalk.dim("  Commands:"));
-  console.log(chalk.dim("    /clear   — Reset conversation history"));
-  console.log(chalk.dim("    /help    — Show this help"));
-  console.log(chalk.dim("    exit     — Exit the REPL (or Ctrl+C, Ctrl+D)"));
-  console.log(chalk.dim('  Use "\\" at end of line for multi-line input,'));
-  console.log(chalk.dim('  then "." on its own line to finish.'));
+  const theme = getActiveTheme();
+  console.log(theme.colors.dim("  Commands:"));
+  console.log(theme.colors.dim("    /clear   — Reset conversation history"));
+  console.log(theme.colors.dim("    /theme   — List available themes"));
+  console.log(theme.colors.dim("    /theme <name> — Switch theme (persisted)"));
+  console.log(theme.colors.dim("    /help    — Show this help"));
+  console.log(theme.colors.dim("    exit     — Exit the REPL (or Ctrl+C, Ctrl+D)"));
+  console.log(theme.colors.dim('  Use "\\" at end of line for multi-line input,'));
+  console.log(theme.colors.dim('  then "." on its own line to finish.'));
 }
 
 function printBanner(model: string, llmAvailable: boolean): void {
+  const theme = getActiveTheme();
   const modeLabel = llmAvailable
-    ? chalk.green("API connected")
-    : chalk.yellow("Mock mode");
+    ? theme.colors.success("API connected")
+    : theme.colors.warning("Mock mode");
 
   console.log(
-    chalk.bold.cyan("\n  Claude Code CLI") + chalk.dim(" v0.1.0"),
+    theme.colors.bannerTitle("\n  Claude Code CLI") + theme.colors.bannerMeta(" v0.1.0"),
   );
-  console.log(chalk.dim(`  Model: ${model}  •  ${modeLabel}`));
+  console.log(theme.colors.bannerMeta(`  Model: ${model}  •  Theme: ${theme.displayName}  •  ${modeLabel}`));
   console.log(
-    chalk.dim(
+    theme.colors.bannerMeta(
       '  Type a message to chat. "\\" at end of line for multi-line input.',
     ),
   );
   console.log(
-    chalk.dim('  Type "/help" for commands, or "exit" to quit.\n'),
+    theme.colors.bannerMeta('  Type "/help" for commands, or "exit" to quit.\n'),
   );
 }
 
