@@ -1,36 +1,20 @@
 /**
  * CLI Runner
  *
- * Orchestrates the CLI lifecycle: argument parsing, environment setup,
- * tool registration, and dispatching to the main conversation loop.
+ * Slim orchestrator that wires the split CLI modules together:
+ *   1. Parse CLI arguments (args.ts)
+ *   2. Initialize tools and LLM client
+ *   3. Dispatch to one-shot mode or the interactive REPL (repl.ts)
  *
- * Features:
- *   - --model / --api-key / --message flags
- *   - Positional args concatenated as a one-shot message
- *   - Interactive REPL with multi-line input (trailing \)
- *   - Ctrl+C graceful exit, Ctrl+D (EOF) exit
- *   - /clear and /help slash commands
- *   - Mock mode when no API key is configured
- *   - Full integration: getClient() → ConversationManager → streamMessage → ToolExecutor
+ * All rendering goes through the Renderer abstraction (ui/).
+ * The agentic conversation loop lives in agentic-loop.ts.
  */
 
-import { parseArgs } from "node:util";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import chalk from "chalk";
 import ora from "ora";
-import type { ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages/messages.js";
-import {
-  getClient,
-  streamMessage,
-  ConversationManager,
-  DEFAULT_MODEL,
-} from "../llm/index.js";
-import type { ModelId, StreamCallbacks } from "../llm/index.js";
-import {
-  ToolRegistry,
-  ToolExecutor,
-  registerBuiltInTools,
-} from "../tools/index.js";
+import { getClient, ConversationManager } from "../llm/index.js";
+import type { ModelId } from "../llm/index.js";
+import { ToolRegistry, ToolExecutor, registerBuiltInTools } from "../tools/index.js";
 import { ConfirmationHandler } from "./confirm.js";
 import {
   SlashCommandRegistry,
@@ -108,6 +92,12 @@ function parseCliArgs(): CliOptions {
 // ---------------------------------------------------------------------------
 // Main entry
 // ---------------------------------------------------------------------------
+import { parseCliArgs, printHelp } from "./args.js";
+import { processUserMessage } from "./agentic-loop.js";
+import { mockResponse } from "./mock.js";
+import { startRepl } from "./repl.js";
+import { PlainRenderer } from "../ui/index.js";
+import { DEFAULT_SYSTEM_PROMPT } from "../config/defaults.js";
 
 export async function run(): Promise<void> {
   const options = parseCliArgs();
@@ -129,15 +119,15 @@ export async function run(): Promise<void> {
   const confirmHandler = new ConfirmationHandler({
     autoApprove: options.yes,
   });
+  const confirmHandler = new ConfirmationHandler({ autoApprove: options.yes });
   const executor = new ToolExecutor(registry, {
     confirmationHandler: confirmHandler,
   });
 
+  const renderer = new PlainRenderer();
   const spinner = ora("Initializing Claude Code CLI...").start();
 
   // ── Initialize LLM client ────────────────────────────────────────────
-  // Try to connect to the API.  When no key is available, fall back to
-  // mock mode so the REPL still works for UI verification.
   let llmAvailable = false;
   try {
     getClient({ apiKey: options.apiKey, model: options.model as ModelId });
@@ -164,28 +154,28 @@ export async function run(): Promise<void> {
   // ── Dispatch ─────────────────────────────────────────────────────────
   try {
     if (options.message) {
-      await runOnce(options.message, options.model, llmAvailable, registry, executor);
+      await runOnce(options.message, llmAvailable, registry, executor, renderer);
       return;
     }
 
     await startRepl(options.model, llmAvailable, registry, executor, commandRegistry, commandConfig);
+    await startRepl(options.model, llmAvailable, registry, executor, renderer);
   } finally {
     confirmHandler.close();
   }
 }
 
-// ---------------------------------------------------------------------------
-// One-shot mode
-// ---------------------------------------------------------------------------
-
+/**
+ * One-shot mode: process a single message and exit.
+ */
 async function runOnce(
   message: string,
-  _model: string,
   llmAvailable: boolean,
   registry: ToolRegistry,
   executor: ToolExecutor,
+  renderer: PlainRenderer,
 ): Promise<void> {
-  console.log(chalk.blue("You: ") + message);
+  renderer.renderUserMessage(message);
 
   if (!llmAvailable) {
     console.log(chalk.cyan(mockResponse(message)));
@@ -625,4 +615,5 @@ function isExitCommand(input: string): boolean {
 function truncate(str: string, maxLength: number): string {
   if (str.length <= maxLength) return str;
   return str.slice(0, maxLength - 3) + "...";
+  await processUserMessage(message, conversation, registry, executor, renderer);
 }
