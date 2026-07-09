@@ -1,8 +1,10 @@
 /**
  * CLI Runner
  *
- * Orchestrates the CLI lifecycle: argument parsing, environment setup,
- * tool registration, and dispatching to the main conversation loop.
+ * Slim orchestrator that wires the split CLI modules together:
+ *   1. Parse CLI arguments (args.ts)
+ *   2. Initialize tools and LLM client
+ *   3. Dispatch to one-shot mode or the interactive REPL (repl.ts)
  *
  * Features:
  *   - --model / --api-key / --message / --theme flags
@@ -12,28 +14,23 @@
  *   - /clear, /help, and /theme slash commands
  *   - Mock mode when no API key is configured
  *   - Full integration: getClient() → ConversationManager → streamMessage → ToolExecutor
+ * All rendering goes through the Renderer abstraction (ui/).
+ * The agentic conversation loop lives in agentic-loop.ts.
  */
 
-import { parseArgs } from "node:util";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import chalk from "chalk";
 import ora from "ora";
-import type { ToolResultBlockParam } from "@anthropic-ai/sdk/resources/messages/messages.js";
-import {
-  getClient,
-  streamMessage,
-  ConversationManager,
-  DEFAULT_MODEL,
-} from "../llm/index.js";
-import type { ModelId, StreamCallbacks } from "../llm/index.js";
-import {
-  ToolRegistry,
-  ToolExecutor,
-  registerBuiltInTools,
-} from "../tools/index.js";
+import { getClient, ConversationManager } from "../llm/index.js";
+import type { ModelId } from "../llm/index.js";
+import { ToolRegistry, ToolExecutor, registerBuiltInTools } from "../tools/index.js";
 import { ConfirmationHandler } from "./confirm.js";
 import { ConfigManager } from "../config/config-manager.js";
 import { getActiveTheme, setActiveTheme, listThemeNames } from "../ui/themes/index.js";
+import {
+  SlashCommandRegistry,
+  registerBuiltInCommands,
+} from "../commands/index.js";
+import type { CommandContext, CommandConfig } from "../commands/context.js";
 
 // ---------------------------------------------------------------------------
 // Default system prompt
@@ -110,6 +107,12 @@ function parseCliArgs(): CliOptions {
 // ---------------------------------------------------------------------------
 // Main entry
 // ---------------------------------------------------------------------------
+import { parseCliArgs, printHelp } from "./args.js";
+import { processUserMessage } from "./agentic-loop.js";
+import { mockResponse } from "./mock.js";
+import { startRepl } from "./repl.js";
+import { PlainRenderer } from "../ui/index.js";
+import { DEFAULT_SYSTEM_PROMPT } from "../config/defaults.js";
 
 export async function run(): Promise<void> {
   const options = parseCliArgs();
@@ -140,18 +143,22 @@ export async function run(): Promise<void> {
   const registry = new ToolRegistry();
   registerBuiltInTools(registry);
 
+  // ── Initialize slash command registry ─────────────────────────────────
+  const commandRegistry = new SlashCommandRegistry();
+  registerBuiltInCommands(commandRegistry);
+
   const confirmHandler = new ConfirmationHandler({
     autoApprove: options.yes,
   });
+  const confirmHandler = new ConfirmationHandler({ autoApprove: options.yes });
   const executor = new ToolExecutor(registry, {
     confirmationHandler: confirmHandler,
   });
 
+  const renderer = new PlainRenderer();
   const spinner = ora("Initializing Claude Code CLI...").start();
 
   // ── Initialize LLM client ────────────────────────────────────────────
-  // Try to connect to the API.  When no key is available, fall back to
-  // mock mode so the REPL still works for UI verification.
   let llmAvailable = false;
   try {
     getClient({ apiKey: options.apiKey, model: options.model as ModelId });
@@ -168,32 +175,41 @@ export async function run(): Promise<void> {
     ),
   );
 
+  // ── Build shared command config ───────────────────────────────────────
+  const commandConfig: CommandConfig = {
+    model: options.model,
+    theme: "default",
+    llmAvailable,
+  };
+
   // ── Dispatch ─────────────────────────────────────────────────────────
   try {
     if (options.message) {
-      await runOnce(options.message, options.model, llmAvailable, registry, executor);
+      await runOnce(options.message, llmAvailable, registry, executor, renderer);
       return;
     }
 
     await startRepl(options.model, llmAvailable, registry, executor, configManager);
+    await startRepl(options.model, llmAvailable, registry, executor, commandRegistry, commandConfig);
+    await startRepl(options.model, llmAvailable, registry, executor, renderer);
   } finally {
     confirmHandler.close();
   }
 }
 
-// ---------------------------------------------------------------------------
-// One-shot mode
-// ---------------------------------------------------------------------------
-
+/**
+ * One-shot mode: process a single message and exit.
+ */
 async function runOnce(
   message: string,
-  _model: string,
   llmAvailable: boolean,
   registry: ToolRegistry,
   executor: ToolExecutor,
+  renderer: PlainRenderer,
 ): Promise<void> {
   const theme = getActiveTheme();
   console.log(theme.colors.user("You: ") + message);
+  renderer.renderUserMessage(message);
 
   if (!llmAvailable) {
     console.log(theme.colors.assistant(mockResponse(message)));
@@ -333,6 +349,8 @@ async function startRepl(
   registry: ToolRegistry,
   executor: ToolExecutor,
   configManager: ConfigManager,
+  commandRegistry: SlashCommandRegistry,
+  commandConfig: CommandConfig,
 ): Promise<void> {
   const theme = getActiveTheme();
 
@@ -348,6 +366,14 @@ async function startRepl(
     prompt: theme.colors.prompt("> "),
     terminal: true,
   });
+
+  // Build the command context once — shared across all command invocations
+  const commandContext: CommandContext = {
+    conversation: conversation,
+    toolRegistry: registry,
+    config: commandConfig,
+    requestExit: () => rl.close(),
+  };
 
   // Ctrl+C → graceful exit
   rl.on("SIGINT", () => {
@@ -369,6 +395,10 @@ async function startRepl(
       }
     } else if (trimmed.trim()) {
       await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, configManager);
+        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor, commandRegistry, commandContext);
+      }
+    } else if (trimmed.trim()) {
+      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, commandRegistry, commandContext);
     }
 
     rl.prompt();
@@ -415,7 +445,7 @@ async function readMultiLine(
 }
 
 /**
- * Route user input: handle slash commands, then delegate to LLM or mock.
+ * Route user input: handle slash commands via the registry, then delegate to LLM or mock.
  */
 async function handleUserInput(
   input: string,
@@ -435,6 +465,19 @@ async function handleUserInput(
   }
   if (input === "/help") {
     printReplHelp();
+  commandRegistry: SlashCommandRegistry,
+  commandContext: CommandContext,
+): Promise<void> {
+  // ── Slash commands (via registry) ────────────────────────────────────
+  if (input.startsWith("/")) {
+    const resolved = commandRegistry.resolve(input);
+    if (resolved) {
+      await resolved.command.execute(resolved.args, commandContext);
+      return;
+    }
+    // Unknown slash command — show a helpful message
+    console.log(chalk.red(`  Unknown command: ${input.split(/\s+/)[0]}`));
+    console.log(chalk.dim('  Type "/help" for available commands.'));
     return;
   }
   if (input.startsWith("/theme")) {
@@ -442,7 +485,7 @@ async function handleUserInput(
     return;
   }
 
-  // ── Exit commands ────────────────────────────────────────────────────
+  // ── Exit commands (non-slash: exit, quit, :q, :qa) ──────────────────
   if (isExitCommand(input)) {
     console.log(theme.colors.dim("Goodbye!"));
     process.exit(0);
@@ -537,6 +580,12 @@ ${chalk.bold("Interactive REPL commands:")}
   /theme            ${chalk.dim("# List available themes")}
   /theme <name>     ${chalk.dim("# Switch theme (persisted)")}
   /help             ${chalk.dim("# Show REPL help")}
+  /help             ${chalk.dim("# Show all available commands")}
+  /model <name>     ${chalk.dim("# Switch LLM model at runtime")}
+  /theme <name>     ${chalk.dim("# Switch CLI theme")}
+  /config [k] [v]   ${chalk.dim("# View or modify configuration")}
+  /status           ${chalk.dim("# Show current CLI status")}
+  /tools            ${chalk.dim("# List available tools")}
   exit, quit, :q    ${chalk.dim("# Exit the REPL")}
 
 ${chalk.bold("Available tools:")}
@@ -684,4 +733,5 @@ function isExitCommand(input: string): boolean {
 function truncate(str: string, maxLength: number): string {
   if (str.length <= maxLength) return str;
   return str.slice(0, maxLength - 3) + "...";
+  await processUserMessage(message, conversation, registry, executor, renderer);
 }
