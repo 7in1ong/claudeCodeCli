@@ -11,7 +11,6 @@
  */
 
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import chalk from "chalk";
 import { ConversationManager } from "../llm/index.js";
 import { ToolRegistry, ToolExecutor } from "../tools/index.js";
 import type { Renderer } from "../ui/renderer.js";
@@ -189,8 +188,8 @@ async function handleUserInput(
       return;
     }
     // Unknown slash command — show a helpful message
-    console.log(chalk.red(`  Unknown command: ${input.split(/\s+/)[0]}`));
-    console.log(chalk.dim('  Type "/help" for available commands.'));
+    console.log(theme.colors.error(`  Unknown command: ${input.split(/\s+/)[0]}`));
+    console.log(theme.colors.dim('  Type "/help" for available commands.'));
     return;
   }
 

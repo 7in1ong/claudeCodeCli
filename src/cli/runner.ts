@@ -18,7 +18,6 @@
  *   - The agentic conversation loop lives in agentic-loop.ts
  */
 
-import chalk from "chalk";
 import ora from "ora";
 import { getClient, ConversationManager } from "../llm/index.js";
 import type { ModelId } from "../llm/index.js";
@@ -58,7 +57,7 @@ export async function run(): Promise<void> {
   // CLI --theme flag overrides config; fall back to config value
   const themeName = options.theme ?? configManager.get("theme");
   if (!setActiveTheme(themeName)) {
-    console.log(chalk.yellow(`  Unknown theme "${themeName}", using default.`));
+    console.log(getActiveTheme().colors.warning(`  Unknown theme "${themeName}", using default.`));
     setActiveTheme("default");
   }
   // Persist the theme choice only when it is valid and came from --theme flag

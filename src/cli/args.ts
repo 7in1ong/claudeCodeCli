@@ -7,8 +7,8 @@
  */
 
 import { parseArgs } from "node:util";
-import chalk from "chalk";
 import { DEFAULT_MODEL } from "../config/defaults.js";
+import { getActiveTheme } from "../ui/themes/index.js";
 
 /**
  * Parsed CLI options.
@@ -72,48 +72,57 @@ export function parseCliArgs(): CliOptions {
 
 /**
  * Print full CLI usage help to stdout.
+ *
+ * Uses the active theme for styling. Since the theme module registers
+ * all built-in themes at import time, getActiveTheme() always returns
+ * a valid theme even before config is loaded.
  */
 export function printHelp(): void {
-  const help = `
-${chalk.bold("Claude Code CLI")} - An interactive CLI for Claude AI
+  const theme = getActiveTheme();
+  const b = theme.colors.bannerTitle;
+  const d = theme.colors.dim;
+  const a = theme.colors.assistant;
 
-${chalk.bold("Usage:")}
+  const help = `
+${b("Claude Code CLI")} - An interactive CLI for Claude AI
+
+${b("Usage:")}
   claude-code [options] [message]
 
-${chalk.bold("Options:")}
-  --model <model>     Model to use          ${chalk.dim(`(default: ${DEFAULT_MODEL})`)}
-  --api-key <key>     Anthropic API key     ${chalk.dim("(or set ANTHROPIC_API_KEY)")}
+${b("Options:")}
+  --model <model>     Model to use          ${d(`(default: ${DEFAULT_MODEL})`)}
+  --api-key <key>     Anthropic API key     ${d("(or set ANTHROPIC_API_KEY)")}
   -m, --message <msg> Send a single message and exit
-  --theme <name>      Theme to use          ${chalk.dim("(default, dark, light)")}
+  --theme <name>      Theme to use          ${d("(default, dark, light)")}
   -y, --yes           Auto-approve tool actions (skip confirmation prompts)
   --help              Show this help message
 
-${chalk.bold("Examples:")}
-  claude-code                                   ${chalk.dim("# Start interactive REPL")}
-  claude-code "explain async/await"             ${chalk.dim("# One-shot question")}
-  claude-code --model claude-opus-4-20250514    ${chalk.dim("# Use a different model")}
-  claude-code --theme dark                      ${chalk.dim("# Use dark theme")}
-  claude-code --api-key sk-xxx "hello"          ${chalk.dim("# Inline API key")}
-  claude-code --yes "fix the bug in auth.ts"    ${chalk.dim("# Skip tool confirmations")}
+${b("Examples:")}
+  claude-code                                   ${d("# Start interactive REPL")}
+  claude-code ${a('"explain async/await"')}             ${d("# One-shot question")}
+  claude-code --model ${a("claude-opus-4-20250514")}    ${d("# Use a different model")}
+  claude-code --theme ${a("dark")}                      ${d("# Use dark theme")}
+  claude-code --api-key ${a("sk-xxx")} ${a('"hello"')}          ${d("# Inline API key")}
+  claude-code --yes ${a('"fix the bug in auth.ts"')}    ${d("# Skip tool confirmations")}
 
-${chalk.bold("Interactive REPL commands:")}
-  /clear            ${chalk.dim("# Reset conversation history")}
-  /help             ${chalk.dim("# Show REPL help")}
-  /model <name>     ${chalk.dim("# Switch LLM model at runtime")}
-  /theme <name>     ${chalk.dim("# Switch CLI theme")}
-  /config [k] [v]   ${chalk.dim("# View or modify configuration")}
-  /status           ${chalk.dim("# Show current CLI status")}
-  /tools            ${chalk.dim("# List available tools")}
-  exit, quit, :q    ${chalk.dim("# Exit the REPL")}
+${b("Interactive REPL commands:")}
+  /clear            ${d("# Reset conversation history")}
+  /help             ${d("# Show REPL help")}
+  /model <name>     ${d("# Switch LLM model at runtime")}
+  /theme <name>     ${d("# Switch CLI theme")}
+  /config [k] [v]   ${d("# View or modify configuration")}
+  /status           ${d("# Show current CLI status")}
+  /tools            ${d("# List available tools")}
+  exit, quit, :q    ${d("# Exit the REPL")}
 
-${chalk.bold("Available tools:")}
-  read_file         ${chalk.dim("# Read file contents (with line numbers)")}
-  write_file        ${chalk.dim("# Create or overwrite files")}
-  bash              ${chalk.dim("# Execute shell commands")}
-  list_files        ${chalk.dim("# List directory contents (supports glob)")}
+${b("Available tools:")}
+  read_file         ${d("# Read file contents (with line numbers)")}
+  write_file        ${d("# Create or overwrite files")}
+  bash              ${d("# Execute shell commands")}
+  list_files        ${d("# List directory contents (supports glob)")}
 
-  ${chalk.dim("Tools that modify files or execute commands will ask for confirmation")}
-  ${chalk.dim("unless --yes is passed.")}
+  ${d("Tools that modify files or execute commands will ask for confirmation")}
+  ${d("unless --yes is passed.")}
 `.trimStart();
 
   console.log(help);

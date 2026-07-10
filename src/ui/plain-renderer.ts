@@ -6,7 +6,6 @@
  * themes takes effect immediately across all output.
  */
 
-import chalk from "chalk";
 import type { Renderer } from "./renderer.js";
 import { getActiveTheme } from "./themes/index.js";
 import { truncate } from "../utils/index.js";
