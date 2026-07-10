@@ -10,7 +10,7 @@
  */
 
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import chalk from "chalk";
+import { getActiveTheme } from "../ui/themes/index.js";
 
 /**
  * ConfirmationHandler
@@ -47,23 +47,25 @@ export class ConfirmationHandler {
       });
     }
 
-    console.log(chalk.yellow(`\n  ┌─ ${action}`));
+    const theme = getActiveTheme();
+
+    console.log(theme.colors.confirmBorder(`\n  ┌─ ${action}`));
     // Indent each line of the details for readability
     for (const line of details.split("\n")) {
-      console.log(chalk.yellow(`  │  `) + chalk.dim(line));
+      console.log(theme.colors.confirmBorder(`  │  `) + theme.colors.dim(line));
     }
-    console.log(chalk.yellow(`  └─`));
+    console.log(theme.colors.confirmBorder(`  └─`));
 
     return new Promise<boolean>((resolve) => {
       this.rl!.question(
-        chalk.yellow("  Allow? (y/n) "),
+        theme.colors.confirmBorder("  Allow? (y/n) "),
         (answer: string) => {
           const normalized = answer.trim().toLowerCase();
           if (normalized === "y" || normalized === "yes") {
-            console.log(chalk.green("  ✓ Approved"));
+            console.log(theme.colors.confirmApproved("  ✓ Approved"));
             resolve(true);
           } else {
-            console.log(chalk.red("  ✗ Denied"));
+            console.log(theme.colors.confirmDenied("  ✗ Denied"));
             resolve(false);
           }
         },
