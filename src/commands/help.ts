@@ -2,14 +2,13 @@
  * /help Command
  *
  * Displays available slash commands, auto-generated from the registry.
- * Migrated from the hardcoded printReplHelp() in runner.ts.
  */
 
-import chalk from "chalk";
 import { SlashCommand } from "./base.js";
 import type { CommandContext } from "./context.js";
 import type { ParsedArgs } from "./parser.js";
 import type { SlashCommandRegistry } from "./registry.js";
+import { getActiveTheme } from "../ui/themes/index.js";
 
 /**
  * Creates a /help command bound to the given registry.
@@ -33,18 +32,25 @@ class HelpCommand extends SlashCommand {
   }
 
   async execute(_args: ParsedArgs, _context: CommandContext): Promise<void> {
+    const theme = getActiveTheme();
     const commands = this.registry.list().sort((a, b) => a.name.localeCompare(b.name));
 
-    console.log(chalk.dim("  Commands:"));
+    console.log(theme.colors.dim("  Commands:"));
 
     for (const cmd of commands) {
-      const aliases = cmd.aliases?.length ? chalk.dim(` (${cmd.aliases.join(", ")})`) : "";
+      const aliases = cmd.aliases?.length
+        ? theme.colors.dim(` (${cmd.aliases.join(", ")})`)
+        : "";
       const name = `/${cmd.name}`;
-      console.log(chalk.dim(`    ${name.padEnd(16)}`) + aliases + chalk.dim(` — ${cmd.description}`));
+      console.log(
+        theme.colors.dim(`    ${name.padEnd(16)}`) +
+          aliases +
+          theme.colors.dim(` — ${cmd.description}`),
+      );
     }
 
-    console.log(chalk.dim(""));
-    console.log(chalk.dim('  Use "\\" at end of line for multi-line input,'));
-    console.log(chalk.dim('  then "." on its own line to finish.'));
+    console.log(theme.colors.dim(""));
+    console.log(theme.colors.dim('  Use "\\" at end of line for multi-line input,'));
+    console.log(theme.colors.dim('  then "." on its own line to finish.'));
   }
 }

@@ -2,27 +2,39 @@
  * /config Command
  *
  * View or modify CLI configuration items at runtime.
+ * Persists changes to disk via ConfigManager when available.
  *
  * Usage:
  *   /config                    List all configuration items
  *   /config <key>              Show the value of a specific key
  *   /config <key> <value>      Set a configuration item
- *
- * Configuration items are stored in CommandContext.config and persist
- * for the lifetime of the current CLI session.
  */
 
-import chalk from "chalk";
 import { SlashCommand } from "./base.js";
 import type { CommandContext } from "./context.js";
 import type { ParsedArgs } from "./parser.js";
 import type { ArgDefinition } from "./base.js";
+import { getActiveTheme } from "../ui/themes/index.js";
+import { setActiveTheme } from "../ui/themes/index.js";
+import type { ConfigManager } from "../config/config-manager.js";
+import type { ConfigKey } from "../config/config-manager.js";
+
+/**
+ * Optional ConfigManager reference set by the REPL at startup.
+ * When present, config changes are persisted to disk.
+ */
+let configManagerRef: ConfigManager | null = null;
+
+/** Inject the ConfigManager so /config can persist changes. */
+export function setConfigCommandManager(cm: ConfigManager): void {
+  configManagerRef = cm;
+}
 
 /**
  * Keys that are displayed when listing all config items.
  * Internal/context keys (like llmAvailable, requestExit) are excluded.
  */
-const DISPLAY_KEYS = ["model", "theme"];
+const DISPLAY_KEYS: ConfigKey[] = ["model", "theme", "autoConfirm", "maxTokens"];
 
 export class ConfigCommand extends SlashCommand {
   readonly name = "config";
@@ -42,44 +54,107 @@ export class ConfigCommand extends SlashCommand {
     },
   ];
 
-  async execute(args: ParsedArgs, context: CommandContext): Promise<void> {
+  async execute(args: ParsedArgs, _context: CommandContext): Promise<void> {
     const key = args.positionals[0];
     const value = args.positionals[1];
+    const theme = getActiveTheme();
 
     // /config — list all displayable keys
     if (!key) {
-      console.log(chalk.dim("  Configuration:"));
-      for (const k of DISPLAY_KEYS) {
-        const v = context.config[k];
-        console.log(chalk.dim(`    ${k.padEnd(16)}`) + chalk.cyan(String(v)));
+      console.log(theme.colors.dim("  Configuration:"));
+      if (configManagerRef) {
+        const all = configManagerRef.getAll();
+        for (const k of DISPLAY_KEYS) {
+          console.log(
+            theme.colors.dim(`    ${k.padEnd(16)}`) +
+              theme.colors.assistant(String(all[k])),
+          );
+        }
+      } else {
+        console.log(theme.colors.dim("    (config manager not available)"));
       }
       return;
     }
 
     // /config <key> — read a single key
     if (value === undefined) {
-      if (key in context.config) {
-        console.log(chalk.dim(`  ${key}: `) + chalk.cyan(String(context.config[key])));
+      if (configManagerRef) {
+        const all = configManagerRef.getAll();
+        if (key in all) {
+          console.log(
+            theme.colors.dim(`  ${key}: `) +
+              theme.colors.assistant(String((all as Record<string, unknown>)[key])),
+          );
+        } else {
+          console.log(theme.colors.error(`  Unknown config key: "${key}"`));
+        }
       } else {
-        console.log(chalk.red(`  Unknown config key: "${key}"`));
+        console.log(theme.colors.error(`  Config manager not available.`));
       }
       return;
     }
 
     // /config <key> <value> — set a key
-    if (key === "model") {
-      // Delegate to the model-switching logic: update config and reset client
-      context.config.model = value;
-      // Lazy import to avoid circular dependency at module load time
-      const { resetClient } = await import("../llm/client.js");
-      resetClient();
-    } else if (key === "theme") {
-      context.config.theme = value;
-    } else {
-      // Generic key: store as-is
-      context.config[key] = value;
+    if (!configManagerRef) {
+      console.log(theme.colors.error("  Config manager not available."));
+      return;
     }
 
-    console.log(chalk.green(`  Set `) + chalk.cyan(key) + chalk.green(` = `) + chalk.cyan(value));
+    // Type-safe setters for known config keys
+    if (key === "theme") {
+      if (setActiveTheme(value)) {
+        configManagerRef.set("theme", value);
+        console.log(theme.colors.success(`  Theme switched to "${value}".`));
+      } else {
+        console.log(theme.colors.warning(`  Unknown theme: "${value}"`));
+      }
+      return;
+    }
+
+    if (key === "autoConfirm") {
+      const boolVal = value === "true" || value === "1" || value === "yes";
+      configManagerRef.set("autoConfirm", boolVal);
+      console.log(
+        theme.colors.success(`  Set `) +
+          theme.colors.assistant(key) +
+          theme.colors.success(` = `) +
+          theme.colors.assistant(String(boolVal)),
+      );
+      return;
+    }
+
+    if (key === "maxTokens") {
+      const numVal = parseInt(value, 10);
+      if (isNaN(numVal) || numVal <= 0) {
+        console.log(theme.colors.error(`  Invalid number: "${value}"`));
+        return;
+      }
+      configManagerRef.set("maxTokens", numVal);
+      console.log(
+        theme.colors.success(`  Set `) +
+          theme.colors.assistant(key) +
+          theme.colors.success(` = `) +
+          theme.colors.assistant(String(numVal)),
+      );
+      return;
+    }
+
+    if (key === "model" || key === "apiKey") {
+      configManagerRef.set(key, value);
+      if (key === "model") {
+        // Reset LLM client so the next call uses the new model
+        const { resetClient } = await import("../llm/client.js");
+        resetClient();
+      }
+      console.log(
+        theme.colors.success(`  Set `) +
+          theme.colors.assistant(key) +
+          theme.colors.success(` = `) +
+          theme.colors.assistant(value),
+      );
+      return;
+    }
+
+    console.log(theme.colors.error(`  Unknown config key: "${key}"`));
   }
 }

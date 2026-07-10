@@ -7,6 +7,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PlainRenderer } from "../src/ui/plain-renderer.js";
+import { setActiveTheme } from "../src/ui/themes/index.js";
 
 describe("PlainRenderer", () => {
   let renderer: PlainRenderer;
@@ -156,6 +157,47 @@ describe("PlainRenderer", () => {
       const calls = consoleLogSpy.mock.calls.map((c) => String(c[0]));
       const combined = calls.join("\n");
       expect(combined).toContain("multi-line");
+    });
+  });
+
+  describe("theme integration", () => {
+    afterEach(() => {
+      setActiveTheme("default");
+    });
+
+    it("should use active theme colors for user messages", () => {
+      setActiveTheme("dark");
+      renderer.renderUserMessage("hello");
+      expect(consoleLogSpy).toHaveBeenCalled();
+      const output = String(consoleLogSpy.mock.calls[0][0]);
+      expect(output).toContain("You:");
+      expect(output).toContain("hello");
+    });
+
+    it("should use active theme colors for banner", () => {
+      setActiveTheme("light");
+      renderer.renderBanner("1.0.0", "claude-sonnet-4-20250514", true);
+      const calls = consoleLogSpy.mock.calls.map((c) => String(c[0]));
+      const combined = calls.join(" ");
+      expect(combined).toContain("Claude Code CLI");
+      expect(combined).toContain("API connected");
+    });
+
+    it("should use active theme colors for tool start", () => {
+      setActiveTheme("dark");
+      renderer.renderToolStart("bash");
+      expect(consoleLogSpy).toHaveBeenCalled();
+      const output = String(consoleLogSpy.mock.calls[0][0]);
+      expect(output).toContain("[Tool]");
+      expect(output).toContain("bash");
+    });
+
+    it("should use active theme colors for error", () => {
+      setActiveTheme("light");
+      renderer.renderError("something broke");
+      expect(consoleErrorSpy).toHaveBeenCalled();
+      const output = String(consoleErrorSpy.mock.calls[0][0]);
+      expect(output).toContain("something broke");
     });
   });
 });

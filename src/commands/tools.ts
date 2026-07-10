@@ -8,10 +8,10 @@
  *   /tools
  */
 
-import chalk from "chalk";
 import { SlashCommand } from "./base.js";
 import type { CommandContext } from "./context.js";
 import type { ParsedArgs } from "./parser.js";
+import { getActiveTheme } from "../ui/themes/index.js";
 
 export class ToolsCommand extends SlashCommand {
   readonly name = "tools";
@@ -19,25 +19,26 @@ export class ToolsCommand extends SlashCommand {
 
   async execute(_args: ParsedArgs, context: CommandContext): Promise<void> {
     const tools = context.toolRegistry.list();
+    const theme = getActiveTheme();
 
     if (tools.length === 0) {
-      console.log(chalk.dim("  No tools registered."));
+      console.log(theme.colors.dim("  No tools registered."));
       return;
     }
 
-    console.log(chalk.dim(`  ${tools.length} tool(s) available:`));
-    console.log(chalk.dim("  ─────────────────────────────────────────"));
+    console.log(theme.colors.dim(`  ${tools.length} tool(s) available:`));
+    console.log(theme.colors.dim("  ─────────────────────────────────────────"));
 
     for (const tool of tools.sort((a, b) => a.name.localeCompare(b.name))) {
       const confirmTag = tool.requiresConfirmation
-        ? chalk.yellow(" [needs confirmation]")
-        : chalk.green(" [auto]");
+        ? theme.colors.warning(" [needs confirmation]")
+        : theme.colors.success(" [auto]");
 
       console.log(
-        chalk.dim("  ") +
-          chalk.cyan(tool.name.padEnd(20)) +
+        theme.colors.dim("  ") +
+          theme.colors.tool(tool.name.padEnd(20)) +
           confirmTag +
-          chalk.dim(`  — ${tool.description}`),
+          theme.colors.dim(`  — ${tool.description}`),
       );
     }
   }

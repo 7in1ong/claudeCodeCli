@@ -9,12 +9,12 @@
  *   /model               Show the current model
  */
 
-import chalk from "chalk";
 import { SlashCommand } from "./base.js";
 import type { CommandContext } from "./context.js";
 import type { ParsedArgs } from "./parser.js";
 import type { ArgDefinition } from "./base.js";
 import { resetClient } from "../llm/client.js";
+import { getActiveTheme } from "../ui/themes/index.js";
 
 export class ModelCommand extends SlashCommand {
   readonly name = "model";
@@ -31,9 +31,12 @@ export class ModelCommand extends SlashCommand {
 
   async execute(args: ParsedArgs, context: CommandContext): Promise<void> {
     const modelName = args.positionals[0];
+    const theme = getActiveTheme();
 
     if (!modelName) {
-      console.log(chalk.dim(`  Current model: `) + chalk.cyan(context.config.model));
+      console.log(
+        theme.colors.dim(`  Current model: `) + theme.colors.assistant(context.config.model),
+      );
       return;
     }
 
@@ -41,9 +44,8 @@ export class ModelCommand extends SlashCommand {
     context.config.model = modelName;
     resetClient();
 
-    // Re-initialize the client with the new model on the next API call.
-    // resetClient() sets client=null, and getClient() will pick up
-    // context.config.model when called next.
-    console.log(chalk.green(`  Model switched to: `) + chalk.cyan(modelName));
+    console.log(
+      theme.colors.success(`  Model switched to: `) + theme.colors.assistant(modelName),
+    );
   }
 }

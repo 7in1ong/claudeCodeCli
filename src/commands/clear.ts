@@ -2,13 +2,12 @@
  * /clear Command
  *
  * Resets the conversation history, clearing all messages and counters.
- * Migrated from the hardcoded handler in runner.ts.
  */
 
-import chalk from "chalk";
 import { SlashCommand } from "./base.js";
 import type { CommandContext } from "./context.js";
 import type { ParsedArgs } from "./parser.js";
+import { getActiveTheme } from "../ui/themes/index.js";
 
 export class ClearCommand extends SlashCommand {
   readonly name = "clear";
@@ -16,6 +15,7 @@ export class ClearCommand extends SlashCommand {
 
   async execute(_args: ParsedArgs, context: CommandContext): Promise<void> {
     context.conversation.reset();
-    console.log(chalk.yellow("  Conversation cleared."));
+    const theme = getActiveTheme();
+    console.log(theme.colors.warning("  Conversation cleared."));
   }
 }

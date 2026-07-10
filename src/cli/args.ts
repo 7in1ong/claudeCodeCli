@@ -17,6 +17,7 @@ export interface CliOptions {
   model: string;
   apiKey?: string;
   message?: string;
+  theme?: string;
   yes: boolean;
   help: boolean;
 }
@@ -37,6 +38,9 @@ export function parseCliArgs(): CliOptions {
       message: {
         type: "string",
         short: "m",
+      },
+      theme: {
+        type: "string",
       },
       yes: {
         type: "boolean",
@@ -60,6 +64,7 @@ export function parseCliArgs(): CliOptions {
     model: values.model as string,
     apiKey: values["api-key"] as string | undefined,
     message: (values.message as string | undefined) ?? positionalMessage,
+    theme: values.theme as string | undefined,
     yes: values.yes as boolean,
     help: values.help as boolean,
   };
@@ -79,6 +84,7 @@ ${chalk.bold("Options:")}
   --model <model>     Model to use          ${chalk.dim(`(default: ${DEFAULT_MODEL})`)}
   --api-key <key>     Anthropic API key     ${chalk.dim("(or set ANTHROPIC_API_KEY)")}
   -m, --message <msg> Send a single message and exit
+  --theme <name>      Theme to use          ${chalk.dim("(default, dark, light)")}
   -y, --yes           Auto-approve tool actions (skip confirmation prompts)
   --help              Show this help message
 
@@ -86,12 +92,18 @@ ${chalk.bold("Examples:")}
   claude-code                                   ${chalk.dim("# Start interactive REPL")}
   claude-code "explain async/await"             ${chalk.dim("# One-shot question")}
   claude-code --model claude-opus-4-20250514    ${chalk.dim("# Use a different model")}
+  claude-code --theme dark                      ${chalk.dim("# Use dark theme")}
   claude-code --api-key sk-xxx "hello"          ${chalk.dim("# Inline API key")}
   claude-code --yes "fix the bug in auth.ts"    ${chalk.dim("# Skip tool confirmations")}
 
 ${chalk.bold("Interactive REPL commands:")}
   /clear            ${chalk.dim("# Reset conversation history")}
   /help             ${chalk.dim("# Show REPL help")}
+  /model <name>     ${chalk.dim("# Switch LLM model at runtime")}
+  /theme <name>     ${chalk.dim("# Switch CLI theme")}
+  /config [k] [v]   ${chalk.dim("# View or modify configuration")}
+  /status           ${chalk.dim("# Show current CLI status")}
+  /tools            ${chalk.dim("# List available tools")}
   exit, quit, :q    ${chalk.dim("# Exit the REPL")}
 
 ${chalk.bold("Available tools:")}

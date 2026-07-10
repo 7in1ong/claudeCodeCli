@@ -2,9 +2,12 @@
  * Interactive REPL
  *
  * Manages the readline-based interactive loop: prompt display,
- * multi-line input continuation, slash command routing (/clear, /help),
- * exit detection, and dispatching user input to either mock mode
- * or the agentic loop.
+ * multi-line input continuation, slash command routing via the
+ * SlashCommandRegistry, exit detection, and dispatching user input
+ * to either mock mode or the agentic loop.
+ *
+ * All colors go through the active Theme so theme switches take
+ * effect immediately.
  */
 
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
@@ -12,26 +15,23 @@ import chalk from "chalk";
 import { ConversationManager } from "../llm/index.js";
 import { ToolRegistry, ToolExecutor } from "../tools/index.js";
 import type { Renderer } from "../ui/renderer.js";
+import { getActiveTheme } from "../ui/themes/index.js";
+import type { ConfigManager } from "../config/config-manager.js";
+import {
+  SlashCommandRegistry,
+} from "../commands/index.js";
+import type { CommandContext, CommandConfig } from "../commands/context.js";
 import { processUserMessage } from "./agentic-loop.js";
 import { mockResponse } from "./mock.js";
 import { classifyApiError } from "../utils/errors.js";
 import { DEFAULT_SYSTEM_PROMPT, CLI_VERSION } from "../config/defaults.js";
 
 /**
- * REPL command descriptors passed to Renderer.renderHelp().
- */
-const REPL_COMMANDS = [
-  { name: "/clear", description: "Reset conversation history" },
-  { name: "/help", description: "Show this help" },
-  { name: "exit", description: "Exit the REPL (or Ctrl+C, Ctrl+D)" },
-];
-
-/**
  * Start the interactive REPL.
  *
  * Sets up readline, prints the banner, and enters the input loop.
- * Handles multi-line input (trailing backslash), slash commands,
- * and graceful exit on Ctrl+C / Ctrl+D.
+ * Handles multi-line input (trailing backslash), slash commands via
+ * the registry, and graceful exit on Ctrl+C / Ctrl+D.
  */
 export async function startRepl(
   model: string,
@@ -39,7 +39,11 @@ export async function startRepl(
   registry: ToolRegistry,
   executor: ToolExecutor,
   renderer: Renderer,
+  commandRegistry: SlashCommandRegistry,
+  configManager: ConfigManager,
 ): Promise<void> {
+  const theme = getActiveTheme();
+
   const conversation = new ConversationManager({
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
   });
@@ -49,13 +53,28 @@ export async function startRepl(
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: chalk.green("> "),
+    prompt: theme.colors.prompt("> "),
     terminal: true,
   });
 
+  // Build the command context shared across all command invocations
+  const commandConfig: CommandConfig = {
+    model,
+    theme: theme.name,
+    llmAvailable,
+  };
+
+  const commandContext: CommandContext = {
+    conversation,
+    toolRegistry: registry,
+    config: commandConfig,
+    requestExit: () => rl.close(),
+  };
+
   // Ctrl+C → graceful exit
   rl.on("SIGINT", () => {
-    renderer.renderSystemMessage("\nGoodbye!");
+    const t = getActiveTheme();
+    console.log(t.colors.dim("\nGoodbye!"));
     rl.close();
   });
 
@@ -69,18 +88,41 @@ export async function startRepl(
       const firstPart = trimmed.slice(0, -1);
       const fullInput = await readMultiLine(rl, firstPart);
       if (fullInput.trim()) {
-        await handleUserInput(fullInput, conversation, llmAvailable, registry, executor, renderer);
+        await handleUserInput(
+          fullInput,
+          conversation,
+          llmAvailable,
+          registry,
+          executor,
+          renderer,
+          commandRegistry,
+          commandContext,
+          configManager,
+        );
       }
     } else if (trimmed.trim()) {
-      await handleUserInput(trimmed, conversation, llmAvailable, registry, executor, renderer);
+      await handleUserInput(
+        trimmed,
+        conversation,
+        llmAvailable,
+        registry,
+        executor,
+        renderer,
+        commandRegistry,
+        commandContext,
+        configManager,
+      );
     }
 
+    // Update prompt in case theme changed
+    rl.setPrompt(getActiveTheme().colors.prompt("> "));
     rl.prompt();
   });
 
   // EOF (Ctrl+D) — close gracefully
   rl.on("close", () => {
-    renderer.renderSystemMessage("Goodbye!");
+    const t = getActiveTheme();
+    console.log(t.colors.dim("Goodbye!"));
     process.exit(0);
   });
 }
@@ -95,16 +137,19 @@ async function readMultiLine(
   firstLine: string,
 ): Promise<string> {
   const lines: string[] = [firstLine];
+  const theme = getActiveTheme();
 
-  console.log(chalk.dim('  (multi-line mode: enter "." on its own line to finish)'));
+  console.log(
+    theme.colors.dim('  (multi-line mode: enter "." on its own line to finish)'),
+  );
 
   return new Promise<string>((resolve) => {
-    rl.setPrompt(chalk.yellow("... "));
+    rl.setPrompt(theme.colors.warning("... "));
     rl.prompt();
 
     const onLine = (line: string) => {
       if (line.trim() === ".") {
-        rl.setPrompt(chalk.green("> "));
+        rl.setPrompt(getActiveTheme().colors.prompt("> "));
         rl.removeListener("line", onLine);
         resolve(lines.join("\n"));
       } else {
@@ -118,7 +163,7 @@ async function readMultiLine(
 }
 
 /**
- * Route user input: handle slash commands, then delegate to LLM or mock.
+ * Route user input: handle slash commands via the registry, then delegate to LLM or mock.
  */
 async function handleUserInput(
   input: string,
@@ -127,21 +172,31 @@ async function handleUserInput(
   registry: ToolRegistry,
   executor: ToolExecutor,
   renderer: Renderer,
+  commandRegistry: SlashCommandRegistry,
+  commandContext: CommandContext,
+  configManager: ConfigManager,
 ): Promise<void> {
-  // ── Slash commands ───────────────────────────────────────────────────
-  if (input === "/clear") {
-    conversation.reset();
-    renderer.renderSystemMessage("  Conversation cleared.");
-    return;
-  }
-  if (input === "/help") {
-    renderer.renderHelp(REPL_COMMANDS);
+  const theme = getActiveTheme();
+
+  // ── Slash commands (via registry) ────────────────────────────────────
+  if (input.startsWith("/")) {
+    const resolved = commandRegistry.resolve(input);
+    if (resolved) {
+      await resolved.command.execute(resolved.args, commandContext);
+
+      // After /theme command, update the commandContext config
+      commandContext.config.theme = getActiveTheme().name;
+      return;
+    }
+    // Unknown slash command — show a helpful message
+    console.log(chalk.red(`  Unknown command: ${input.split(/\s+/)[0]}`));
+    console.log(chalk.dim('  Type "/help" for available commands.'));
     return;
   }
 
-  // ── Exit commands ────────────────────────────────────────────────────
+  // ── Exit commands (non-slash: exit, quit, :q, :qa) ──────────────────
   if (isExitCommand(input)) {
-    renderer.renderSystemMessage("Goodbye!");
+    console.log(theme.colors.dim("Goodbye!"));
     process.exit(0);
   }
 
@@ -150,7 +205,7 @@ async function handleUserInput(
 
   // ── Process through LLM or mock ──────────────────────────────────────
   if (!llmAvailable) {
-    console.log(chalk.cyan(mockResponse(input)));
+    console.log(theme.colors.assistant(mockResponse(input)));
     return;
   }
 
