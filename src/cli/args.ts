@@ -19,6 +19,8 @@ export interface CliOptions {
   message?: string;
   yes: boolean;
   help: boolean;
+  tui: boolean;
+  plain: boolean;
 }
 
 /**
@@ -47,6 +49,14 @@ export function parseCliArgs(): CliOptions {
         type: "boolean",
         default: false,
       },
+      tui: {
+        type: "boolean",
+        default: false,
+      },
+      plain: {
+        type: "boolean",
+        default: false,
+      },
     },
     allowPositionals: true,
     strict: true,
@@ -62,6 +72,8 @@ export function parseCliArgs(): CliOptions {
     message: (values.message as string | undefined) ?? positionalMessage,
     yes: values.yes as boolean,
     help: values.help as boolean,
+    tui: values.tui as boolean,
+    plain: values.plain as boolean,
   };
 }
 
@@ -80,10 +92,13 @@ ${chalk.bold("Options:")}
   --api-key <key>     Anthropic API key     ${chalk.dim("(or set ANTHROPIC_API_KEY)")}
   -m, --message <msg> Send a single message and exit
   -y, --yes           Auto-approve tool actions (skip confirmation prompts)
+  --tui               Force TUI mode (panel layout, Markdown rendering)
+  --plain             Force plain text mode (no TUI)
   --help              Show this help message
 
 ${chalk.bold("Examples:")}
-  claude-code                                   ${chalk.dim("# Start interactive REPL")}
+  claude-code                                   ${chalk.dim("# Start interactive TUI")}
+  claude-code --plain                           ${chalk.dim("# Start in plain text mode")}
   claude-code "explain async/await"             ${chalk.dim("# One-shot question")}
   claude-code --model claude-opus-4-20250514    ${chalk.dim("# Use a different model")}
   claude-code --api-key sk-xxx "hello"          ${chalk.dim("# Inline API key")}
@@ -93,6 +108,13 @@ ${chalk.bold("Interactive REPL commands:")}
   /clear            ${chalk.dim("# Reset conversation history")}
   /help             ${chalk.dim("# Show REPL help")}
   exit, quit, :q    ${chalk.dim("# Exit the REPL")}
+
+${chalk.bold("TUI Features (enabled by default in terminal):")}
+  Panel layout      ${chalk.dim("# Conversation, tools, and status panels")}
+  Markdown render   ${chalk.dim("# AI replies rendered with Markdown formatting")}
+  Input history     ${chalk.dim("# Up/Down arrows to browse previous inputs")}
+  Code highlighting ${chalk.dim("# Syntax highlighting in code blocks")}
+  Auto-degrade      ${chalk.dim("# Falls back to plain mode in CI/pipes")}
 
 ${chalk.bold("Available tools:")}
   read_file         ${chalk.dim("# Read file contents (with line numbers)")}

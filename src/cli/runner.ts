@@ -16,13 +16,22 @@
  *   - Full integration: getClient() → ConversationManager → streamMessage → ToolExecutor
  * All rendering goes through the Renderer abstraction (ui/).
  * The agentic conversation loop lives in agentic-loop.ts.
+ *
+ * Renderer selection:
+ *   - One-shot mode (-m) always uses PlainRenderer
+ *   - Interactive mode auto-detects TTY → InkRenderer, CI/pipe → PlainRenderer
+ *   - --tui / --plain flags force the choice
  */
 
-import chalk from "chalk";
 import ora from "ora";
 import { getClient, ConversationManager } from "../llm/index.js";
 import type { ModelId } from "../llm/index.js";
-import { ToolRegistry, ToolExecutor, registerBuiltInTools } from "../tools/index.js";
+import {
+  ToolRegistry,
+  ToolExecutor,
+  registerBuiltInTools,
+} from "../tools/index.js";
+import type { Renderer } from "../ui/renderer.js";
 import { ConfirmationHandler } from "./confirm.js";
 import { ConfigManager } from "../config/config-manager.js";
 import { getActiveTheme, setActiveTheme, listThemeNames } from "../ui/themes/index.js";
@@ -111,7 +120,10 @@ import { parseCliArgs, printHelp } from "./args.js";
 import { processUserMessage } from "./agentic-loop.js";
 import { mockResponse } from "./mock.js";
 import { startRepl } from "./repl.js";
-import { PlainRenderer } from "../ui/index.js";
+import {
+  createRenderer,
+  detectRendererMode,
+} from "../ui/factory.js";
 import { DEFAULT_SYSTEM_PROMPT } from "../config/defaults.js";
 
 export async function run(): Promise<void> {
@@ -122,6 +134,34 @@ export async function run(): Promise<void> {
     printHelp();
     return;
   }
+
+  // ── Initialize tool registry ─────────────────────────────────────────
+  const registry = new ToolRegistry();
+  registerBuiltInTools(registry);
+
+  // ── Detect renderer mode ─────────────────────────────────────────────
+  // One-shot mode always uses plain renderer (no interactive UI needed)
+  const isOneShot = !!options.message;
+  const rendererMode = isOneShot
+    ? "plain" as const
+    : detectRendererMode({ tui: options.tui, plain: options.plain });
+
+  const renderer = createRenderer(rendererMode, {
+    autoApprove: options.yes,
+  });
+
+  // ── Confirmation handler ─────────────────────────────────────────────
+  // In TUI mode, delegate confirmation to the renderer's confirm() method.
+  // In plain mode, use the readline-based ConfirmationHandler.
+  const hasTuiConfirm =
+    rendererMode === "tui" && typeof renderer.confirm === "function";
+
+  const confirmHandler = hasTuiConfirm
+    ? {
+        confirm: (action: string, details: string) =>
+          renderer.confirm!(action, details),
+      }
+    : new ConfirmationHandler({ autoApprove: options.yes });
 
   // ── Load config and apply theme ──────────────────────────────────────
   const configManager = new ConfigManager();
@@ -155,7 +195,6 @@ export async function run(): Promise<void> {
     confirmationHandler: confirmHandler,
   });
 
-  const renderer = new PlainRenderer();
   const spinner = ora("Initializing Claude Code CLI...").start();
 
   // ── Initialize LLM client ────────────────────────────────────────────
@@ -167,6 +206,8 @@ export async function run(): Promise<void> {
     // Mock mode — LLM calls will be stubbed out
   }
 
+  // Stop spinner before renderer takes over the terminal
+  spinner.stop();
   spinner.succeed(
     theme.colors.success(
       `Claude Code CLI ready. ${registry.size} tool(s) registered: ` +
@@ -185,15 +226,33 @@ export async function run(): Promise<void> {
   // ── Dispatch ─────────────────────────────────────────────────────────
   try {
     if (options.message) {
-      await runOnce(options.message, llmAvailable, registry, executor, renderer);
+      await runOnce(
+        options.message,
+        llmAvailable,
+        registry,
+        executor,
+        renderer,
+      );
       return;
     }
 
+    await startRepl(
+      options.model,
+      llmAvailable,
+      registry,
+      executor,
+      renderer,
+    );
     await startRepl(options.model, llmAvailable, registry, executor, configManager);
     await startRepl(options.model, llmAvailable, registry, executor, commandRegistry, commandConfig);
     await startRepl(options.model, llmAvailable, registry, executor, renderer);
   } finally {
-    confirmHandler.close();
+    // Clean up readline-based confirmation handler
+    if (confirmHandler instanceof ConfirmationHandler) {
+      confirmHandler.close();
+    }
+    // Clean up renderer resources
+    renderer.cleanup?.();
   }
 }
 
@@ -205,13 +264,15 @@ async function runOnce(
   llmAvailable: boolean,
   registry: ToolRegistry,
   executor: ToolExecutor,
-  renderer: PlainRenderer,
+  renderer: Renderer,
 ): Promise<void> {
   const theme = getActiveTheme();
   console.log(theme.colors.user("You: ") + message);
   renderer.renderUserMessage(message);
 
   if (!llmAvailable) {
+    renderer.renderAssistantText(mockResponse(message));
+    renderer.endStream?.();
     console.log(theme.colors.assistant(mockResponse(message)));
     return;
   }
@@ -219,6 +280,13 @@ async function runOnce(
   const conversation = new ConversationManager({
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
   });
+  await processUserMessage(
+    message,
+    conversation,
+    registry,
+    executor,
+    renderer,
+  );
   await processUserMessage(message, conversation, registry, executor);
 }
 
